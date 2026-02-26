@@ -78,8 +78,12 @@ $PIGEON_CACHE/
 
 ```bash
 ./bin/pigeon curl -I https://example.com
-./bin/pigeon bash -lc 'read -p "name? " n; echo "hello $n"'
+./bin/pigeon codex
+./bin/pigeon 'read -p "name? " n; echo "hello $n"'
 ```
+
+默认会在 worker 侧按 `bash -lc "<你的命令>"` 执行，所以常用场景直接 `pigeon <cmd...>` 即可，不再需要手写 `bash -lc`。
+如果你已经写了 `pigeon bash -lc ...`，也继续兼容。
 
 客户端会把 stdout/stderr（PTY 合流）实时打印到本地终端，并支持 Ctrl-C 转发。
 
@@ -100,7 +104,7 @@ export PIGEON_NAMESPACE=demo
 ```bash
 export PIGEON_CACHE=/tmp/pigeon-cache
 export PIGEON_NAMESPACE=demo
-./bin/pigeon bash -lc 'pwd; echo hi; sleep 1; echo done'
+./bin/pigeon 'pwd; echo hi; sleep 1; echo done'
 ```
 
 ## 注意事项

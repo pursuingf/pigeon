@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import signal
 import sys
 import termios
@@ -61,6 +62,23 @@ def _build_request(command: Sequence[str], cwd: str, session_id: str) -> Dict[st
             "size": term_size,
         },
     }
+
+
+def _is_shell_lc(command: Sequence[str]) -> bool:
+    if len(command) < 3:
+        return False
+    shell = str(command[0])
+    return shell in {"bash", "/bin/bash", "sh", "/bin/sh", "zsh", "/bin/zsh"} and str(command[1]) == "-lc"
+
+
+def _normalize_exec_command(command: Sequence[str]) -> List[str]:
+    if _is_shell_lc(command):
+        return list(command)
+    if len(command) == 1:
+        # A single argument can be an intentional shell snippet like:
+        #   pigeon 'cd x && make'
+        return ["bash", "-lc", str(command[0])]
+    return ["bash", "-lc", shlex.join([str(x) for x in command])]
 
 
 class _TerminalMode:
@@ -139,7 +157,7 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
     sdir = session_dir(config, session_id)
     sdir.mkdir(parents=True, exist_ok=False)
 
-    request = _build_request(command=command, cwd=cwd, session_id=session_id)
+    request = _build_request(command=_normalize_exec_command(command), cwd=cwd, session_id=session_id)
     atomic_write_json(request_path(config, session_id), request)
     atomic_write_json(
         status_path(config, session_id),
