@@ -9,6 +9,7 @@ import pty
 import select
 import signal
 import subprocess
+import sys
 import threading
 import time
 from typing import Dict, List, Tuple
@@ -35,10 +36,50 @@ from .common import (
 )
 
 
-def _debug_log(enabled: bool, message: str) -> None:
+def _supports_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    term = os.environ.get("TERM", "")
+    if term.lower() == "dumb":
+        return False
+    return sys.stdout.isatty()
+
+
+def _paint(text: str, color_code: str, enabled: bool) -> str:
+    if not enabled:
+        return text
+    return f"\x1b[{color_code}m{text}\x1b[0m"
+
+
+def _debug_log(enabled: bool, message: str, kind: str = "info") -> None:
     if not enabled:
         return
-    print(f"[pigeon-worker][debug] {message}", flush=True)
+    use_color = _supports_color()
+    ts = time.strftime("%H:%M:%S")
+    kind_colors = {
+        "lifecycle": "96",  # bright cyan
+        "queue": "95",  # bright magenta
+        "lock": "94",  # bright blue
+        "stdin": "92",  # bright green
+        "stdout": "37",  # white
+        "stderr": "93",  # bright yellow
+        "signal": "91",  # bright red
+        "success": "92",  # bright green
+        "failure": "91",  # bright red
+        "error": "91",  # bright red
+        "transport": "36",  # cyan
+        "info": "90",  # bright black
+    }
+    kind_label = kind.upper()
+    color = kind_colors.get(kind, kind_colors["info"])
+    prefix = _paint("[pigeon-worker]", "90", use_color)
+    debug_tag = _paint("[debug]", "2", use_color)
+    kind_tag = _paint(f"[{kind_label}]", color, use_color)
+    ts_tag = _paint(ts, "90", use_color)
+    msg = _paint(message, color, use_color)
+    print(f"{prefix}{debug_tag}{kind_tag} {ts_tag} {msg}", flush=True)
 
 
 def _bytes_preview(data: bytes, limit: int = 96) -> str:
@@ -128,7 +169,11 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
         raise RuntimeError("invalid command in request")
     if not isinstance(cwd, str):
         raise RuntimeError("invalid cwd in request")
-    _debug_log(debug, f"session={session_id} exec begin cwd={cwd} cmd={_format_command(req)}")
+    _debug_log(
+        debug,
+        f"session={session_id} exec begin cwd={cwd} cmd={_format_command(req)}",
+        kind="lifecycle",
+    )
 
     terminal = req.get("terminal", {})
     if not isinstance(terminal, dict):
@@ -178,7 +223,7 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
             close_fds=True,
         )
         os.close(slave_fd)
-        _debug_log(debug, f"session={session_id} exec transport=pty")
+        _debug_log(debug, f"session={session_id} exec transport=pty", kind="transport")
     else:
         append_jsonl(
             stream_path(config, session_id),
@@ -195,7 +240,11 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
             close_fds=True,
             bufsize=0,
         )
-        _debug_log(debug, f"session={session_id} exec transport=pipes (pty unavailable)")
+        _debug_log(
+            debug,
+            f"session={session_id} exec transport=pipes (pty unavailable)",
+            kind="transport",
+        )
 
     stdout_seq = 0
     in_offset = 0
@@ -218,7 +267,11 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
                 raw = rec.get("data_b64")
                 if isinstance(raw, str):
                     payload = decode_bytes(raw)
-                    _debug_log(debug, f"session={session_id} stdin seq={rec.get('seq')} {_bytes_preview(payload)}")
+                    _debug_log(
+                        debug,
+                        f"session={session_id} stdin seq={rec.get('seq')} {_bytes_preview(payload)}",
+                        kind="stdin",
+                    )
                     if use_pty:
                         try:
                             os.write(master_fd, payload)
@@ -234,7 +287,7 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
             elif typ == "stdin_eof":
                 if stdin_eof_forwarded:
                     continue
-                _debug_log(debug, f"session={session_id} stdin eof")
+                _debug_log(debug, f"session={session_id} stdin eof", kind="stdin")
                 if use_pty:
                     try:
                         os.write(master_fd, b"\x04")
@@ -257,7 +310,7 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
                 continue
             try:
                 os.killpg(proc.pid, sig)
-                _debug_log(debug, f"session={session_id} signal forwarded sig={sig}")
+                _debug_log(debug, f"session={session_id} signal forwarded sig={sig}", kind="signal")
             except ProcessLookupError:
                 pass
 
@@ -280,7 +333,11 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
                     else:
                         raise
                 if chunk:
-                    _debug_log(debug, f"session={session_id} output channel=pty {_bytes_preview(chunk)}")
+                    _debug_log(
+                        debug,
+                        f"session={session_id} output channel=pty {_bytes_preview(chunk)}",
+                        kind="stdout",
+                    )
                     append_jsonl(
                         stream_out,
                         {
@@ -301,7 +358,11 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
                     chunk = b""
                 if chunk:
                     channel = "stdout" if fd == stdout_fd else "stderr"
-                    _debug_log(debug, f"session={session_id} output channel={channel} {_bytes_preview(chunk)}")
+                    _debug_log(
+                        debug,
+                        f"session={session_id} output channel={channel} {_bytes_preview(chunk)}",
+                        kind="stdout" if channel == "stdout" else "stderr",
+                    )
                     append_jsonl(
                         stream_out,
                         {
@@ -334,7 +395,11 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
         except OSError:
             pass
     shell_code = _shell_exit_code(int(code))
-    _debug_log(debug, f"session={session_id} exec end raw_return={int(code)} shell_exit={shell_code}")
+    _debug_log(
+        debug,
+        f"session={session_id} exec end raw_return={int(code)} shell_exit={shell_code}",
+        kind="success" if shell_code == 0 else "failure",
+    )
     append_jsonl(
         stream_out,
         {
@@ -354,9 +419,9 @@ def _run_session(config: PigeonConfig, session_id: str, debug: bool = False) -> 
     if not isinstance(cwd, str):
         raise RuntimeError("invalid cwd")
     lock = cwd_lock_path(config, cwd)
-    _debug_log(debug, f"session={session_id} waiting cwd_lock={lock}")
+    _debug_log(debug, f"session={session_id} waiting cwd_lock={lock}", kind="lock")
     with FileLock(lock):
-        _debug_log(debug, f"session={session_id} acquired cwd_lock={lock}")
+        _debug_log(debug, f"session={session_id} acquired cwd_lock={lock}", kind="lock")
         code = _run_session_once(config, session_id, debug=debug)
     if code == 0:
         _update_status(config, session_id, "succeeded", finished_at=utc_iso(), exit_code=0)
@@ -369,7 +434,7 @@ def _run_session_safe(config: PigeonConfig, session_id: str, debug: bool = False
     try:
         return _run_session(config, session_id, debug=debug)
     except Exception as exc:
-        _debug_log(debug, f"session={session_id} worker_error {type(exc).__name__}: {exc}")
+        _debug_log(debug, f"session={session_id} worker_error {type(exc).__name__}: {exc}", kind="error")
         append_jsonl(
             stream_path(config, session_id),
             {
@@ -411,6 +476,7 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
         _debug_log(
             debug,
             f"worker start host={host_name()} pid={os.getpid()} namespace={config.namespace} cache={config.cache_root}",
+            kind="lifecycle",
         )
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_jobs) as pool:
             while not stop.is_set():
@@ -419,9 +485,17 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
                     sid = futures.pop(f, None)
                     try:
                         code, _ = f.result()
-                        _debug_log(debug, f"session={sid} completed exit={code}")
+                        _debug_log(
+                            debug,
+                            f"session={sid} completed exit={code}",
+                            kind="success" if code == 0 else "failure",
+                        )
                     except Exception:
-                        _debug_log(debug, f"session={sid} completed with internal worker exception")
+                        _debug_log(
+                            debug,
+                            f"session={sid} completed with internal worker exception",
+                            kind="error",
+                        )
 
                 capacity = max_jobs - len(futures)
                 if capacity > 0:
@@ -430,14 +504,14 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
                             break
                         if not _try_claim(config, sid):
                             continue
-                        _debug_log(debug, f"session={sid} claimed")
+                        _debug_log(debug, f"session={sid} claimed", kind="queue")
                         fut = pool.submit(_run_session_safe, config, sid, debug)
                         futures[fut] = sid
                         capacity -= 1
 
                 time.sleep(max(poll_interval, 0.01))
     finally:
-        _debug_log(debug, "worker stop")
+        _debug_log(debug, "worker stop", kind="lifecycle")
         signal.signal(signal.SIGINT, old_int)
         signal.signal(signal.SIGTERM, old_term)
     return 0
