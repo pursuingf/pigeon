@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shlex
 import signal
 import sys
@@ -30,6 +31,7 @@ from .common import (
     tail_jsonl,
     utc_iso,
 )
+from .config import FileConfig, load_file_config
 
 
 def _read_terminal_size() -> Optional[Dict[str, int]]:
@@ -42,8 +44,20 @@ def _read_terminal_size() -> Optional[Dict[str, int]]:
     return {"cols": int(cols), "rows": int(rows)}
 
 
-def _build_request(command: Sequence[str], cwd: str, session_id: str) -> Dict[str, object]:
+def _resolve_request_user(file_config: FileConfig) -> str:
+    return os.environ.get("PIGEON_USER") or file_config.user or os.environ.get("USER", "")
+
+
+def _build_request(
+    command: Sequence[str],
+    cwd: str,
+    session_id: str,
+    file_config: FileConfig,
+) -> Dict[str, object]:
     env = {k: v for k, v in os.environ.items() if isinstance(v, str)}
+    # Remote env from config wins over local env and will also override worker-side
+    # environment because request env is applied last in worker.
+    env.update(file_config.remote_env)
     term_size = _read_terminal_size()
     return {
         "session_id": session_id,
@@ -53,7 +67,7 @@ def _build_request(command: Sequence[str], cwd: str, session_id: str) -> Dict[st
         "requester": {
             "host": host_name(),
             "pid": os.getpid(),
-            "user": os.environ.get("USER", ""),
+            "user": _resolve_request_user(file_config),
         },
         "env": env,
         "terminal": {
@@ -71,14 +85,74 @@ def _is_shell_lc(command: Sequence[str]) -> bool:
     return shell in {"bash", "/bin/bash", "sh", "/bin/sh", "zsh", "/bin/zsh"} and str(command[1]) == "-lc"
 
 
-def _normalize_exec_command(command: Sequence[str]) -> List[str]:
+_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+_VAR_REF_RE = re.compile(r"^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})$")
+
+
+def _prefix_assignments(command: Sequence[str]) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for tok in command:
+        m = _ASSIGN_RE.match(str(tok))
+        if not m:
+            break
+        out[m.group(1)] = m.group(2)
+    return out
+
+
+def _shell_join_tokens(command: Sequence[str]) -> str:
+    parts: List[str] = []
+    for tok in command:
+        s = str(tok)
+        if _VAR_REF_RE.match(s):
+            parts.append(s)
+        else:
+            parts.append(shlex.quote(s))
+    return " ".join(parts)
+
+
+def _rewrite_local_expanded_env_tokens(command: Sequence[str], file_config: FileConfig) -> List[str]:
+    tokens = [str(x) for x in command]
+    if not tokens:
+        return tokens
+    if not file_config.remote_env:
+        return tokens
+
+    local_env = {k: v for k, v in os.environ.items() if isinstance(v, str)}
+    assignments = _prefix_assignments(tokens)
+    assign_count = len(assignments)
+
+    candidates = set(file_config.remote_env.keys()) | set(assignments.keys())
+    if not candidates:
+        return tokens
+
+    for i in range(assign_count, len(tokens)):
+        tok = tokens[i]
+        replaced = tok
+        for name in candidates:
+            local_val = local_env.get(name)
+            if not local_val or tok != local_val:
+                continue
+            if name in assignments:
+                # Case: `VAR=new cmd $VAR` in caller shell where `$VAR` got
+                # expanded early to local value; use assignment RHS as expected.
+                replaced = assignments[name]
+            elif name in file_config.remote_env:
+                # Case: token came from early local expansion; restore remote ref.
+                replaced = f"${name}"
+            break
+        tokens[i] = replaced
+    return tokens
+
+
+def _normalize_exec_command(command: Sequence[str], file_config: FileConfig) -> List[str]:
     if _is_shell_lc(command):
         return list(command)
     if len(command) == 1:
         # A single argument can be an intentional shell snippet like:
         #   pigeon 'cd x && make'
         return ["bash", "-lc", str(command[0])]
-    return ["bash", "-lc", shlex.join([str(x) for x in command])]
+    rewritten = _rewrite_local_expanded_env_tokens(command, file_config)
+    return ["bash", "-lc", _shell_join_tokens(rewritten)]
 
 
 class _TerminalMode:
@@ -149,7 +223,8 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
         print("usage: pigeon <cmd...>", file=sys.stderr)
         return 2
 
-    config = PigeonConfig.from_env()
+    file_config = load_file_config(getattr(parsed_args, "config", None))
+    config = PigeonConfig.from_sources(file_config)
     config.ensure_dirs()
 
     cwd = str(Path.cwd().resolve())
@@ -157,7 +232,12 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
     sdir = session_dir(config, session_id)
     sdir.mkdir(parents=True, exist_ok=False)
 
-    request = _build_request(command=_normalize_exec_command(command), cwd=cwd, session_id=session_id)
+    request = _build_request(
+        command=_normalize_exec_command(command, file_config),
+        cwd=cwd,
+        session_id=session_id,
+        file_config=file_config,
+    )
     atomic_write_json(request_path(config, session_id), request)
     atomic_write_json(
         status_path(config, session_id),

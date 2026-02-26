@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple
 
+from .config import FileConfig
+
 DEFAULT_POLL_INTERVAL = 0.05
 
 
@@ -22,11 +24,19 @@ class PigeonConfig:
     namespace: str
 
     @classmethod
-    def from_env(cls) -> "PigeonConfig":
+    def from_sources(cls, file_config: Optional[FileConfig] = None) -> "PigeonConfig":
         cache = os.environ.get("PIGEON_CACHE")
+        if not cache and file_config is not None:
+            cache = file_config.cache
         if not cache:
             raise RuntimeError("PIGEON_CACHE is required and must point to shared cache directory")
-        ns = os.environ.get("PIGEON_NAMESPACE") or os.environ.get("USER") or "default"
+        ns = (
+            os.environ.get("PIGEON_NAMESPACE")
+            or (file_config.namespace if file_config is not None else None)
+            or (file_config.user if file_config is not None else None)
+            or os.environ.get("USER")
+            or "default"
+        )
         return cls(cache_root=Path(cache).expanduser().resolve(), namespace=ns)
 
     @property

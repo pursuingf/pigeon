@@ -34,6 +34,7 @@ from .common import (
     tail_jsonl,
     utc_iso,
 )
+from .config import load_file_config
 
 
 def _supports_color() -> bool:
@@ -472,11 +473,29 @@ def _run_session_safe(config: PigeonConfig, session_id: str, debug: bool = False
 
 
 def run_worker(parsed_args: argparse.Namespace) -> int:
-    config = PigeonConfig.from_env()
+    file_config = load_file_config(getattr(parsed_args, "config", None))
+    config = PigeonConfig.from_sources(file_config)
     config.ensure_dirs()
-    max_jobs = max(1, int(parsed_args.max_jobs))
-    poll_interval = float(parsed_args.poll_interval)
-    debug = bool(getattr(parsed_args, "debug", False))
+    if parsed_args.max_jobs is not None:
+        max_jobs = max(1, int(parsed_args.max_jobs))
+    elif file_config.worker_max_jobs is not None:
+        max_jobs = max(1, int(file_config.worker_max_jobs))
+    else:
+        max_jobs = 4
+
+    if parsed_args.poll_interval is not None:
+        poll_interval = float(parsed_args.poll_interval)
+    elif file_config.worker_poll_interval is not None:
+        poll_interval = float(file_config.worker_poll_interval)
+    else:
+        poll_interval = 0.2
+
+    if getattr(parsed_args, "debug", None) is not None:
+        debug = bool(parsed_args.debug)
+    elif file_config.worker_debug is not None:
+        debug = bool(file_config.worker_debug)
+    else:
+        debug = False
     stop = threading.Event()
 
     def _stop(signum, frame) -> None:
