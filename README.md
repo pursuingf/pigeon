@@ -65,6 +65,14 @@ $PIGEON_CACHE/
 ./bin/pigeon worker --max-jobs 4
 ```
 
+需要排查交互问题时，可开启 worker debug：
+
+```bash
+./bin/pigeon worker --max-jobs 4 --debug
+```
+
+`--debug` 会打印关键节点（会话 claim、锁等待/获取、命令开始/结束）以及 stdin/stdout/stderr 的字节预览（hex + 文本）。
+
 在 `gpu_m` 执行命令：
 
 ```bash

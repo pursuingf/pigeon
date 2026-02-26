@@ -12,6 +12,7 @@ def _worker_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pigeon worker", description="Run pigeon worker loop")
     p.add_argument("--max-jobs", type=int, default=4, help="Max concurrent session runners")
     p.add_argument("--poll-interval", type=float, default=0.2, help="Worker discovery poll seconds")
+    p.add_argument("--debug", action="store_true", help="Print worker debug events and byte-level I/O previews")
     return p
 
 

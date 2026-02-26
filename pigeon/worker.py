@@ -35,6 +35,30 @@ from .common import (
 )
 
 
+def _debug_log(enabled: bool, message: str) -> None:
+    if not enabled:
+        return
+    print(f"[pigeon-worker][debug] {message}", flush=True)
+
+
+def _bytes_preview(data: bytes, limit: int = 96) -> str:
+    cut = data[:limit]
+    hex_part = " ".join(f"{b:02x}" for b in cut)
+    txt = cut.decode("utf-8", "backslashreplace")
+    txt = txt.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    extra = ""
+    if len(data) > limit:
+        extra = f" ...(+{len(data) - limit}b)"
+    return f"len={len(data)} hex=[{hex_part}] text='{txt}'{extra}"
+
+
+def _format_command(req: Dict[str, object]) -> str:
+    cmd = req.get("command")
+    if not isinstance(cmd, list):
+        return "<invalid>"
+    return " ".join(str(x) for x in cmd)
+
+
 def _shell_exit_code(returncode: int) -> int:
     if returncode >= 0:
         return returncode
@@ -96,7 +120,7 @@ def _try_claim(config: PigeonConfig, session_id: str) -> bool:
     return True
 
 
-def _run_session_once(config: PigeonConfig, session_id: str) -> int:
+def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False) -> int:
     req = read_json(request_path(config, session_id))
     command = req.get("command")
     cwd = req.get("cwd")
@@ -104,6 +128,7 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
         raise RuntimeError("invalid command in request")
     if not isinstance(cwd, str):
         raise RuntimeError("invalid cwd in request")
+    _debug_log(debug, f"session={session_id} exec begin cwd={cwd} cmd={_format_command(req)}")
 
     terminal = req.get("terminal", {})
     if not isinstance(terminal, dict):
@@ -153,6 +178,7 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
             close_fds=True,
         )
         os.close(slave_fd)
+        _debug_log(debug, f"session={session_id} exec transport=pty")
     else:
         append_jsonl(
             stream_path(config, session_id),
@@ -169,6 +195,7 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
             close_fds=True,
             bufsize=0,
         )
+        _debug_log(debug, f"session={session_id} exec transport=pipes (pty unavailable)")
 
     stdout_seq = 0
     in_offset = 0
@@ -191,6 +218,7 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
                 raw = rec.get("data_b64")
                 if isinstance(raw, str):
                     payload = decode_bytes(raw)
+                    _debug_log(debug, f"session={session_id} stdin seq={rec.get('seq')} {_bytes_preview(payload)}")
                     if use_pty:
                         try:
                             os.write(master_fd, payload)
@@ -206,6 +234,7 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
             elif typ == "stdin_eof":
                 if stdin_eof_forwarded:
                     continue
+                _debug_log(debug, f"session={session_id} stdin eof")
                 if use_pty:
                     try:
                         os.write(master_fd, b"\x04")
@@ -228,6 +257,7 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
                 continue
             try:
                 os.killpg(proc.pid, sig)
+                _debug_log(debug, f"session={session_id} signal forwarded sig={sig}")
             except ProcessLookupError:
                 pass
 
@@ -250,6 +280,7 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
                     else:
                         raise
                 if chunk:
+                    _debug_log(debug, f"session={session_id} output channel=pty {_bytes_preview(chunk)}")
                     append_jsonl(
                         stream_out,
                         {
@@ -269,13 +300,15 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
                 except OSError:
                     chunk = b""
                 if chunk:
+                    channel = "stdout" if fd == stdout_fd else "stderr"
+                    _debug_log(debug, f"session={session_id} output channel={channel} {_bytes_preview(chunk)}")
                     append_jsonl(
                         stream_out,
                         {
                             "type": "output",
                             "seq": stdout_seq,
                             "ts": utc_iso(),
-                            "channel": "stdout" if fd == stdout_fd else "stderr",
+                            "channel": channel,
                             "data_b64": encode_bytes(chunk),
                         },
                     )
@@ -301,6 +334,7 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
         except OSError:
             pass
     shell_code = _shell_exit_code(int(code))
+    _debug_log(debug, f"session={session_id} exec end raw_return={int(code)} shell_exit={shell_code}")
     append_jsonl(
         stream_out,
         {
@@ -314,14 +348,16 @@ def _run_session_once(config: PigeonConfig, session_id: str) -> int:
     return shell_code
 
 
-def _run_session(config: PigeonConfig, session_id: str) -> Tuple[int, str]:
+def _run_session(config: PigeonConfig, session_id: str, debug: bool = False) -> Tuple[int, str]:
     req = read_json(request_path(config, session_id))
     cwd = req.get("cwd")
     if not isinstance(cwd, str):
         raise RuntimeError("invalid cwd")
     lock = cwd_lock_path(config, cwd)
+    _debug_log(debug, f"session={session_id} waiting cwd_lock={lock}")
     with FileLock(lock):
-        code = _run_session_once(config, session_id)
+        _debug_log(debug, f"session={session_id} acquired cwd_lock={lock}")
+        code = _run_session_once(config, session_id, debug=debug)
     if code == 0:
         _update_status(config, session_id, "succeeded", finished_at=utc_iso(), exit_code=0)
     else:
@@ -329,10 +365,11 @@ def _run_session(config: PigeonConfig, session_id: str) -> Tuple[int, str]:
     return code, "ok"
 
 
-def _run_session_safe(config: PigeonConfig, session_id: str) -> Tuple[int, str]:
+def _run_session_safe(config: PigeonConfig, session_id: str, debug: bool = False) -> Tuple[int, str]:
     try:
-        return _run_session(config, session_id)
+        return _run_session(config, session_id, debug=debug)
     except Exception as exc:
+        _debug_log(debug, f"session={session_id} worker_error {type(exc).__name__}: {exc}")
         append_jsonl(
             stream_path(config, session_id),
             {
@@ -358,6 +395,7 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
     config.ensure_dirs()
     max_jobs = max(1, int(parsed_args.max_jobs))
     poll_interval = float(parsed_args.poll_interval)
+    debug = bool(getattr(parsed_args, "debug", False))
     stop = threading.Event()
 
     def _stop(signum, frame) -> None:
@@ -370,15 +408,20 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
 
     futures: Dict[concurrent.futures.Future, str] = {}
     try:
+        _debug_log(
+            debug,
+            f"worker start host={host_name()} pid={os.getpid()} namespace={config.namespace} cache={config.cache_root}",
+        )
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_jobs) as pool:
             while not stop.is_set():
                 done = [f for f in futures if f.done()]
                 for f in done:
-                    futures.pop(f, None)
+                    sid = futures.pop(f, None)
                     try:
-                        f.result()
+                        code, _ = f.result()
+                        _debug_log(debug, f"session={sid} completed exit={code}")
                     except Exception:
-                        pass
+                        _debug_log(debug, f"session={sid} completed with internal worker exception")
 
                 capacity = max_jobs - len(futures)
                 if capacity > 0:
@@ -387,12 +430,14 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
                             break
                         if not _try_claim(config, sid):
                             continue
-                        fut = pool.submit(_run_session_safe, config, sid)
+                        _debug_log(debug, f"session={sid} claimed")
+                        fut = pool.submit(_run_session_safe, config, sid, debug)
                         futures[fut] = sid
                         capacity -= 1
 
                 time.sleep(max(poll_interval, 0.01))
     finally:
+        _debug_log(debug, "worker stop")
         signal.signal(signal.SIGINT, old_int)
         signal.signal(signal.SIGTERM, old_term)
     return 0
