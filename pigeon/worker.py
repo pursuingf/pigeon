@@ -303,16 +303,32 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
 
         ctrl_offset, ctrl_records = tail_jsonl(ctrl_file, ctrl_offset)
         for rec in ctrl_records:
-            if rec.get("type") != "signal":
-                continue
-            sig = rec.get("signal")
-            if not isinstance(sig, int):
-                continue
-            try:
-                os.killpg(proc.pid, sig)
-                _debug_log(debug, f"session={session_id} signal forwarded sig={sig}", kind="signal")
-            except ProcessLookupError:
-                pass
+            typ = rec.get("type")
+            if typ == "signal":
+                sig = rec.get("signal")
+                if not isinstance(sig, int):
+                    continue
+                try:
+                    os.killpg(proc.pid, sig)
+                    _debug_log(debug, f"session={session_id} signal forwarded sig={sig}", kind="signal")
+                except ProcessLookupError:
+                    pass
+            elif typ == "resize" and use_pty:
+                cols = rec.get("cols")
+                rows = rec.get("rows")
+                if not isinstance(cols, int) or not isinstance(rows, int):
+                    continue
+                cols = max(cols, 1)
+                rows = max(rows, 1)
+                try:
+                    _set_winsize(master_fd, rows=rows, cols=cols)
+                    _debug_log(
+                        debug,
+                        f"session={session_id} resize applied cols={cols} rows={rows}",
+                        kind="transport",
+                    )
+                except OSError:
+                    pass
 
         if use_pty:
             read_fds = [master_fd] if pty_open else []

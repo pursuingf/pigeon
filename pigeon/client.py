@@ -31,15 +31,19 @@ from .common import (
 )
 
 
+def _read_terminal_size() -> Optional[Dict[str, int]]:
+    if not sys.stdin.isatty():
+        return None
+    try:
+        cols, rows = os.get_terminal_size(sys.stdin.fileno())
+    except OSError:
+        return None
+    return {"cols": int(cols), "rows": int(rows)}
+
+
 def _build_request(command: Sequence[str], cwd: str, session_id: str) -> Dict[str, object]:
     env = {k: v for k, v in os.environ.items() if isinstance(v, str)}
-    term_size = None
-    if sys.stdin.isatty():
-        try:
-            cols, rows = os.get_terminal_size(sys.stdin.fileno())
-            term_size = {"cols": cols, "rows": rows}
-        except OSError:
-            term_size = None
+    term_size = _read_terminal_size()
     return {
         "session_id": session_id,
         "command": list(command),
@@ -70,11 +74,21 @@ class _TerminalMode:
         self._fd = sys.stdin.fileno()
         self._old_attrs = termios.tcgetattr(self._fd)
         attrs = termios.tcgetattr(self._fd)
+        # Use a near-raw proxy mode so interactive TUI keystrokes are forwarded
+        # with minimal local line-discipline rewriting (notably Enter/CR).
+        attrs[0] = attrs[0] & ~termios.BRKINT
+        attrs[0] = attrs[0] & ~termios.ICRNL
+        attrs[0] = attrs[0] & ~termios.INPCK
+        attrs[0] = attrs[0] & ~termios.ISTRIP
+        attrs[0] = attrs[0] & ~termios.IXON
+        attrs[1] = attrs[1] & ~termios.OPOST
+        attrs[2] = attrs[2] | termios.CS8
         attrs[3] = attrs[3] & ~termios.ECHO
         attrs[3] = attrs[3] & ~termios.ICANON
+        attrs[3] = attrs[3] & ~termios.IEXTEN
         attrs[6][termios.VMIN] = 1
         attrs[6][termios.VTIME] = 0
-        termios.tcsetattr(self._fd, termios.TCSADRAIN, attrs)
+        termios.tcsetattr(self._fd, termios.TCSAFLUSH, attrs)
 
     def exit(self) -> None:
         if self._fd is None or self._old_attrs is None:
@@ -142,6 +156,9 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
     stdin_path(config, session_id).touch(exist_ok=True)
     control_path(config, session_id).touch(exist_ok=True)
 
+    terminal_mode = _TerminalMode()
+    terminal_mode.enter()
+
     stop = threading.Event()
     stdin_thread = threading.Thread(target=_stdin_pump, args=(config, session_id, stop), daemon=True)
     if sys.stdin and hasattr(sys.stdin, "fileno"):
@@ -161,11 +178,26 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
         )
         control_seq["value"] += 1
 
-    old_sigint = signal.getsignal(signal.SIGINT)
-    signal.signal(signal.SIGINT, _on_sigint)
+    def _on_sigwinch(signum, frame) -> None:
+        size = _read_terminal_size()
+        if not size:
+            return
+        append_jsonl(
+            control_path(config, session_id),
+            {
+                "type": "resize",
+                "seq": control_seq["value"],
+                "cols": size["cols"],
+                "rows": size["rows"],
+                "ts": utc_iso(),
+            },
+        )
+        control_seq["value"] += 1
 
-    terminal_mode = _TerminalMode()
-    terminal_mode.enter()
+    old_sigint = signal.getsignal(signal.SIGINT)
+    old_sigwinch = signal.getsignal(signal.SIGWINCH)
+    signal.signal(signal.SIGINT, _on_sigint)
+    signal.signal(signal.SIGWINCH, _on_sigwinch)
 
     stream_offset = 0
     last_state = "pending"
@@ -227,4 +259,5 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
         stop.set()
         terminal_mode.exit()
         signal.signal(signal.SIGINT, old_sigint)
+        signal.signal(signal.SIGWINCH, old_sigwinch)
     return exit_code

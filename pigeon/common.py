@@ -136,12 +136,19 @@ def tail_jsonl(path: Path, offset: int) -> Tuple[int, Iterator[Dict[str, Any]]]:
     with path.open("r", encoding="utf-8") as fh:
         fh.seek(offset)
         data = fh.read()
-        new_offset = fh.tell()
     if not data:
-        return new_offset, iter(())
+        return offset, iter(())
+
+    # Only parse full lines. Keep a trailing partial JSON line unread to avoid
+    # dropping records when reader races with writer appends.
+    last_newline = data.rfind("\n")
+    if last_newline < 0:
+        return offset, iter(())
+    parseable = data[: last_newline + 1]
+    new_offset = offset + len(parseable)
 
     def _iter() -> Iterator[Dict[str, Any]]:
-        for line in data.splitlines():
+        for line in parseable.splitlines():
             if not line:
                 continue
             try:
