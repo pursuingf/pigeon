@@ -16,9 +16,10 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .config import FileConfig
 
-DEFAULT_POLL_INTERVAL = 0.05
+DEFAULT_POLL_INTERVAL = 0.01
 WORKER_HEARTBEAT_STALE_SECONDS = 3.0
 WORKER_HEARTBEAT_INTERVAL_SECONDS = 1.0
+APPEND_FSYNC_ENV = "PIGEON_APPEND_FSYNC"
 _WORKER_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
@@ -29,15 +30,15 @@ class PigeonConfig:
 
     @classmethod
     def from_sources(cls, file_config: Optional[FileConfig] = None) -> "PigeonConfig":
-        cache = os.environ.get("PIGEON_CACHE")
-        if not cache and file_config is not None:
-            cache = file_config.cache
+        cache = file_config.cache if file_config is not None else None
+        if not cache:
+            cache = os.environ.get("PIGEON_CACHE")
         if not cache:
             raise RuntimeError("PIGEON_CACHE is required and must point to shared cache directory")
         ns = (
-            os.environ.get("PIGEON_NAMESPACE")
-            or (file_config.namespace if file_config is not None else None)
+            (file_config.namespace if file_config is not None else None)
             or (file_config.user if file_config is not None else None)
+            or os.environ.get("PIGEON_NAMESPACE")
             or os.environ.get("USER")
             or "default"
         )
@@ -227,8 +228,16 @@ def append_jsonl(path: Path, record: Dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as fh:
         fh.write(line)
         fh.write("\n")
-        fh.flush()
-        os.fsync(fh.fileno())
+        if _append_fsync_enabled():
+            fh.flush()
+            os.fsync(fh.fileno())
+
+
+def _append_fsync_enabled() -> bool:
+    raw = os.environ.get(APPEND_FSYNC_ENV, "").strip().lower()
+    if raw in {"1", "true", "yes", "on", "always"}:
+        return True
+    return False
 
 
 def tail_jsonl(path: Path, offset: int) -> Tuple[int, Iterator[Dict[str, Any]]]:

@@ -12,6 +12,7 @@ from .config import (
     configurable_keys,
     ensure_file_config,
     refresh_file_config,
+    sync_env_to_file_config,
     set_active_config_path,
     set_config_value,
     unset_config_value,
@@ -114,18 +115,13 @@ def _fmt_value(v: object) -> str:
 
 
 def _print_effective(file_cfg) -> None:
-    cache = os.environ.get("PIGEON_CACHE") or file_cfg.cache
-    namespace = os.environ.get("PIGEON_NAMESPACE") or file_cfg.namespace or file_cfg.user or os.environ.get("USER") or "default"
-    requester_user = os.environ.get("PIGEON_USER") or file_cfg.user or os.environ.get("USER", "")
-    client_route = os.environ.get("PIGEON_ROUTE") or file_cfg.route
-    worker_route = (
-        os.environ.get("PIGEON_WORKER_ROUTE")
-        or os.environ.get("PIGEON_ROUTE")
-        or file_cfg.worker_route
-        or file_cfg.route
-    )
+    cache = file_cfg.cache
+    namespace = file_cfg.namespace or file_cfg.user or os.environ.get("USER") or "default"
+    requester_user = file_cfg.user or os.environ.get("USER", "")
+    client_route = file_cfg.route
+    worker_route = file_cfg.worker_route or file_cfg.route
     worker_max_jobs = file_cfg.worker_max_jobs if file_cfg.worker_max_jobs is not None else 4
-    worker_poll = file_cfg.worker_poll_interval if file_cfg.worker_poll_interval is not None else 0.2
+    worker_poll = file_cfg.worker_poll_interval if file_cfg.worker_poll_interval is not None else 0.05
     worker_debug = file_cfg.worker_debug if file_cfg.worker_debug is not None else False
 
     print("[effective]")
@@ -166,23 +162,26 @@ def _run_config(parsed_args: argparse.Namespace) -> int:
             return 0
 
         if action == "init":
-            _, created = ensure_file_config(None)
+            _, created, changed = sync_env_to_file_config(None)
             print(f"path={target}")
             print(f"created={'yes' if created else 'no'}")
+            print(f"env_synced={'yes' if changed else 'no'}")
             return 0
 
         if action == "refresh":
-            cfg, created, changed = refresh_file_config(None)
+            _, created_defaults, changed_defaults = refresh_file_config(None)
+            cfg, created_env, changed_env = sync_env_to_file_config(None)
             print(f"path={cfg.path}")
-            print(f"created={'yes' if created else 'no'}")
-            print(f"refreshed={'yes' if changed else 'no'}")
+            print(f"created={'yes' if (created_defaults or created_env) else 'no'}")
+            print(f"refreshed={'yes' if (changed_defaults or changed_env) else 'no'}")
             return 0
 
         if action == "show":
-            cfg, created = ensure_file_config(None)
+            cfg, created, changed = sync_env_to_file_config(None)
             print(f"path={target}")
             print("exists=yes")
             print(f"created_now={'yes' if created else 'no'}")
+            print(f"env_synced_now={'yes' if changed else 'no'}")
             body = config_to_toml(cfg).rstrip()
             print("")
             print("[file]")
@@ -230,6 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("  pigeon config path <FILE>  <=>  PIGEON_CONFIG=<FILE>")
         print("optional env:")
         print("  PIGEON_CONFIG=/path/to/pigeon.toml")
+        print("  PIGEON_CONFIG_ROOT=/shared/pigeon-config-state")
         print("  PIGEON_CACHE=/path/to/shared/cache")
         print("  PIGEON_NAMESPACE=<namespace> (default: $USER)")
         print("  PIGEON_USER=<requester user>")

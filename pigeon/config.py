@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 ACTIVE_CONFIG_ENV = "PIGEON_CONFIG"
+CONFIG_ROOT_ENV = "PIGEON_CONFIG_ROOT"
 DEFAULT_CONFIG_FILENAME = "config.toml"
 ACTIVE_CONFIG_POINTER_FILENAME = "active_config_path"
 DEFAULT_BOOTSTRAP_CACHE = "/tmp/pigeon-cache"
 DEFAULT_BOOTSTRAP_WORKER_MAX_JOBS = 4
-DEFAULT_BOOTSTRAP_WORKER_POLL_INTERVAL = 0.2
+DEFAULT_BOOTSTRAP_WORKER_POLL_INTERVAL = 0.05
 DEFAULT_BOOTSTRAP_WORKER_DEBUG = False
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -53,8 +54,15 @@ def configurable_keys() -> tuple[str, ...]:
     return _CONFIG_KEYS
 
 
+def config_root_dir() -> Path:
+    raw = os.environ.get(CONFIG_ROOT_ENV)
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return (Path.home() / ".config" / "pigeon").resolve()
+
+
 def _home_default_path() -> Path:
-    return Path.home() / ".config" / "pigeon" / DEFAULT_CONFIG_FILENAME
+    return config_root_dir() / DEFAULT_CONFIG_FILENAME
 
 
 def active_config_pointer_path() -> Path:
@@ -148,6 +156,13 @@ def _bootstrap_file_config(path: Path) -> FileConfig:
     route = (os.environ.get("PIGEON_ROUTE") or "").strip() or None
     worker_route = (os.environ.get("PIGEON_WORKER_ROUTE") or "").strip() or route
     cache = (os.environ.get("PIGEON_CACHE") or DEFAULT_BOOTSTRAP_CACHE).strip()
+    worker_max_jobs = _env_positive_int("PIGEON_WORKER_MAX_JOBS") or DEFAULT_BOOTSTRAP_WORKER_MAX_JOBS
+    worker_poll_interval = (
+        _env_positive_float("PIGEON_WORKER_POLL_INTERVAL") or DEFAULT_BOOTSTRAP_WORKER_POLL_INTERVAL
+    )
+    worker_debug = _env_bool("PIGEON_WORKER_DEBUG")
+    if worker_debug is None:
+        worker_debug = DEFAULT_BOOTSTRAP_WORKER_DEBUG
 
     return FileConfig(
         path=path,
@@ -155,9 +170,9 @@ def _bootstrap_file_config(path: Path) -> FileConfig:
         namespace=namespace,
         route=route,
         user=user,
-        worker_max_jobs=DEFAULT_BOOTSTRAP_WORKER_MAX_JOBS,
-        worker_poll_interval=DEFAULT_BOOTSTRAP_WORKER_POLL_INTERVAL,
-        worker_debug=DEFAULT_BOOTSTRAP_WORKER_DEBUG,
+        worker_max_jobs=worker_max_jobs,
+        worker_poll_interval=worker_poll_interval,
+        worker_debug=worker_debug,
         worker_route=worker_route,
         remote_env={},
     )
@@ -304,6 +319,90 @@ def refresh_file_config(explicit: Optional[str]) -> Tuple[FileConfig, bool, bool
         written = write_file_config(refreshed, explicit)
         refreshed = replace(refreshed, path=written)
     return refreshed, created, changed
+
+
+def _env_non_empty(name: str) -> Optional[str]:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    val = raw.strip()
+    if not val:
+        return None
+    return val
+
+
+def _env_positive_int(name: str) -> Optional[int]:
+    raw = _env_non_empty(name)
+    if raw is None:
+        return None
+    try:
+        out = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"invalid integer env {name}: {raw!r}") from exc
+    if out <= 0:
+        raise RuntimeError(f"invalid integer env {name}: must be > 0")
+    return out
+
+
+def _env_positive_float(name: str) -> Optional[float]:
+    raw = _env_non_empty(name)
+    if raw is None:
+        return None
+    try:
+        out = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"invalid float env {name}: {raw!r}") from exc
+    if out <= 0:
+        raise RuntimeError(f"invalid float env {name}: must be > 0")
+    return out
+
+
+def _env_bool(name: str) -> Optional[bool]:
+    raw = _env_non_empty(name)
+    if raw is None:
+        return None
+    val = raw.lower()
+    if val in _BOOL_TRUE:
+        return True
+    if val in _BOOL_FALSE:
+        return False
+    raise RuntimeError(f"invalid boolean env {name}: {raw!r}")
+
+
+def sync_env_to_file_config(explicit: Optional[str]) -> Tuple[FileConfig, bool, bool]:
+    cfg, created = ensure_file_config(explicit)
+    updated = cfg
+    cache = _env_non_empty("PIGEON_CACHE")
+    namespace = _env_non_empty("PIGEON_NAMESPACE")
+    user = _env_non_empty("PIGEON_USER")
+    route = _env_non_empty("PIGEON_ROUTE")
+    worker_route = _env_non_empty("PIGEON_WORKER_ROUTE")
+    worker_max_jobs = _env_positive_int("PIGEON_WORKER_MAX_JOBS")
+    worker_poll_interval = _env_positive_float("PIGEON_WORKER_POLL_INTERVAL")
+    worker_debug = _env_bool("PIGEON_WORKER_DEBUG")
+
+    if cache is not None:
+        updated = replace(updated, cache=cache)
+    if namespace is not None:
+        updated = replace(updated, namespace=namespace)
+    if user is not None:
+        updated = replace(updated, user=user)
+    if route is not None:
+        updated = replace(updated, route=route)
+    if worker_route is not None:
+        updated = replace(updated, worker_route=worker_route)
+    if worker_max_jobs is not None:
+        updated = replace(updated, worker_max_jobs=worker_max_jobs)
+    if worker_poll_interval is not None:
+        updated = replace(updated, worker_poll_interval=worker_poll_interval)
+    if worker_debug is not None:
+        updated = replace(updated, worker_debug=worker_debug)
+
+    changed = config_to_toml(cfg) != config_to_toml(updated)
+    if created or changed:
+        written = write_file_config(updated, explicit)
+        updated = replace(updated, path=written)
+    return updated, created, changed
 
 
 def _parse_bool_literal(raw: str, key: str) -> bool:

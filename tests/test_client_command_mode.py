@@ -7,7 +7,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from pigeon.client import _build_request, _normalize_exec_command, _resolve_worker_wait_timeout, _wait_for_worker
+from pigeon.client import (
+    _build_request,
+    _normalize_exec_command,
+    _resolve_worker_wait_timeout,
+    _shell_prelude,
+    _wait_for_worker,
+)
 from pigeon.common import PigeonConfig, now_ts, write_worker_heartbeat
 from pigeon.config import FileConfig
 
@@ -47,6 +53,13 @@ class ClientCommandModeTests(unittest.TestCase):
     def test_single_argument_shell_snippet_is_used_verbatim(self) -> None:
         wrapped = _normalize_exec_command(["pwd; echo hi"], self._cfg())
         self.assertEqual(wrapped, ["bash", "--noprofile", "--norc", "-c", "pwd; echo hi"])
+
+    def test_shell_prelude_enables_color_aliases_for_tty(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("pigeon.client.sys.stdout.isatty", return_value=True):
+                prelude = _shell_prelude()
+        self.assertIn("alias ls='ls --color=auto'\n", prelude)
+        self.assertTrue(prelude.endswith("\n"))
 
     def test_remote_env_from_config_has_highest_priority(self) -> None:
         file_cfg = self._cfg({"FOO": "from_config", "BAR": "bar_cfg"})

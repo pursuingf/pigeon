@@ -40,7 +40,7 @@ from .common import (
     utc_iso,
     write_worker_heartbeat,
 )
-from .config import FileConfig, config_target_path, ensure_file_config, load_file_config
+from .config import FileConfig, config_target_path, load_file_config, sync_env_to_file_config
 
 WORKER_CONFIG_RELOAD_INTERVAL_SECONDS = 1.0
 
@@ -56,8 +56,6 @@ def _route_matches(worker_route: str | None, req_route: str | None) -> bool:
 def _resolve_worker_route(parsed_args: argparse.Namespace, file_config: FileConfig) -> str | None:
     return _normalize_route(
         getattr(parsed_args, "route", None)
-        or os.environ.get("PIGEON_WORKER_ROUTE")
-        or os.environ.get("PIGEON_ROUTE")
         or file_config.worker_route
         or file_config.route
     )
@@ -68,7 +66,7 @@ def _resolve_worker_poll_interval(parsed_args: argparse.Namespace, file_config: 
         return float(parsed_args.poll_interval)
     if file_config.worker_poll_interval is not None:
         return float(file_config.worker_poll_interval)
-    return 0.2
+    return 0.05
 
 
 def _resolve_worker_debug(parsed_args: argparse.Namespace, file_config: FileConfig) -> bool:
@@ -542,7 +540,7 @@ def _run_session_safe(config: PigeonConfig, session_id: str, debug: bool = False
 
 
 def run_worker(parsed_args: argparse.Namespace) -> int:
-    file_config, created = ensure_file_config(None)
+    file_config, created, _ = sync_env_to_file_config(None)
     if created:
         print(f"[pigeon-worker] initialized config: {file_config.path}", file=sys.stderr)
     config = PigeonConfig.from_sources(file_config)

@@ -33,7 +33,7 @@ from .common import (
     tail_jsonl,
     utc_iso,
 )
-from .config import FileConfig, ensure_file_config
+from .config import FileConfig, sync_env_to_file_config
 
 DEFAULT_WORKER_WAIT_SECONDS = 3.0
 
@@ -49,15 +49,11 @@ def _read_terminal_size() -> Optional[Dict[str, int]]:
 
 
 def _resolve_request_user(file_config: FileConfig) -> str:
-    return os.environ.get("PIGEON_USER") or file_config.user or os.environ.get("USER", "")
+    return file_config.user or os.environ.get("USER", "")
 
 
 def _resolve_request_route(parsed_args: argparse.Namespace, file_config: FileConfig) -> Optional[str]:
-    route = (
-        getattr(parsed_args, "route", None)
-        or os.environ.get("PIGEON_ROUTE")
-        or file_config.route
-    )
+    route = getattr(parsed_args, "route", None) or file_config.route
     if route is None:
         return None
     route = str(route).strip()
@@ -201,14 +197,31 @@ def _normalize_exec_command(
     file_config: FileConfig,
 ) -> List[str]:
     shell_prefix = ["bash", "--noprofile", "--norc", "-c"]
+    prelude = _shell_prelude()
     if _is_shell_c(command):
         return list(command)
     if len(command) == 1:
         # A single argument can be an intentional shell snippet like:
         #   pigeon 'cd x && make'
-        return [*shell_prefix, str(command[0])]
+        return [*shell_prefix, f"{prelude}{str(command[0])}"]
     rewritten = _rewrite_local_expanded_env_tokens(command, file_config)
-    return [*shell_prefix, _shell_join_tokens(rewritten)]
+    return [*shell_prefix, f"{prelude}{_shell_join_tokens(rewritten)}"]
+
+
+def _shell_prelude() -> str:
+    if os.environ.get("NO_COLOR"):
+        return ""
+    if not sys.stdout.isatty():
+        return ""
+    # Keep shell startup clean (no user rc/profile), but preserve common
+    # interactive color behavior for basic tools.
+    return (
+        "shopt -s expand_aliases\n"
+        "alias ls='ls --color=auto'\n"
+        "alias grep='grep --color=auto'\n"
+        "alias egrep='egrep --color=auto'\n"
+        "alias fgrep='fgrep --color=auto'\n"
+    )
 
 
 class _TerminalMode:
@@ -279,7 +292,7 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
         print("usage: pigeon <cmd...>", file=sys.stderr)
         return 2
 
-    file_config, created = ensure_file_config(None)
+    file_config, created, _ = sync_env_to_file_config(None)
     if created:
         print(f"[pigeon] initialized config: {file_config.path}", file=sys.stderr)
     config = PigeonConfig.from_sources(file_config)

@@ -90,11 +90,11 @@ user = "$USER"
 
 [worker]
 max_jobs = 4
-poll_interval = 0.2
+poll_interval = 0.05
 debug = false
 ```
 
-如果你已经设置了环境变量 `PIGEON_CACHE/PIGEON_NAMESPACE/PIGEON_USER/PIGEON_ROUTE/PIGEON_WORKER_ROUTE`，初始化时会优先使用这些环境变量值。
+如果你已经设置了环境变量 `PIGEON_CACHE/PIGEON_NAMESPACE/PIGEON_USER/PIGEON_ROUTE/PIGEON_WORKER_ROUTE/PIGEON_WORKER_MAX_JOBS/PIGEON_WORKER_POLL_INTERVAL/PIGEON_WORKER_DEBUG`，初始化时会写入这些环境变量值。
 
 写入最小可用配置（把路径和路由改成你的真实值）：
 
@@ -123,13 +123,13 @@ pigeon config refresh
 在 `cpu_m` 执行：
 
 ```bash
-pigeon worker --route cpu-pool-a --max-jobs 4 --poll-interval 0.2
+pigeon worker --route cpu-pool-a --max-jobs 4 --poll-interval 0.05
 ```
 
 调试时打开 debug 日志（带颜色）：
 
 ```bash
-pigeon worker --route cpu-pool-a --max-jobs 4 --poll-interval 0.2 --debug
+pigeon worker --route cpu-pool-a --max-jobs 4 --poll-interval 0.05 --debug
 ```
 
 worker 运行中会每秒自动重读一次配置文件（`route`/`worker.poll_interval`/`worker.debug`），修改共享配置后无需重启 worker。
@@ -142,7 +142,7 @@ worker 运行中会每秒自动重读一次配置文件（`route`/`worker.poll_i
 ```bash
 cd /data/project/repo
 pigeon pwd
-pigeon ls --color=auto
+pigeon ls
 pigeon curl -I https://example.com
 ```
 
@@ -192,13 +192,29 @@ echo $?
 2. `PIGEON_CONFIG=/path/to/file.toml` 也表示当前路径（进程内生效，并会同步到持久化路径）。
 3. 若两者都没设置过，默认 `~/.config/pigeon/config.toml`。
 
-业务参数优先级：
+业务参数规则（统一以配置文件为准）：
 
-1. `cache`：`PIGEON_CACHE` > `config.cache`
-2. `namespace`：`PIGEON_NAMESPACE` > `config.namespace` > `config.user` > `$USER` > `default`
-3. client `route`：`--route` > `PIGEON_ROUTE` > `config.route`
-4. worker `route`：`worker --route` > `PIGEON_WORKER_ROUTE` > `PIGEON_ROUTE` > `config.worker.route` > `config.route`
+1. 启动 `pigeon`/`pigeon worker`/`pigeon config show|init|refresh` 时，会先把环境变量同步写入当前配置文件。
+2. 同步后，运行期读取配置时优先用配置文件值；只有配置文件缺失该项时才回退到环境变量。
+3. client `route`：`--route` > `config.route`
+4. worker `route`：`worker --route` > `config.worker.route` > `config.route`
 5. 远端环境变量：`config.remote_env.*` 覆盖同名本地环境变量和 worker 环境变量
+
+当前支持自动同步到配置文件的环境变量：
+
+- `PIGEON_CACHE`
+- `PIGEON_NAMESPACE`
+- `PIGEON_USER`
+- `PIGEON_ROUTE`
+- `PIGEON_WORKER_ROUTE`
+- `PIGEON_WORKER_MAX_JOBS`
+- `PIGEON_WORKER_POLL_INTERVAL`
+- `PIGEON_WORKER_DEBUG`
+
+性能开关（默认快路径）：
+
+- 默认 `append_jsonl` 不做每条 `fsync`，交互延迟更低。
+- 如需最强落盘一致性，可设置 `PIGEON_APPEND_FSYNC=always`（会明显变慢）。
 
 ## 8. 远端环境变量与 shell 展开
 

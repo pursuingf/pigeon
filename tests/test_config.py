@@ -19,6 +19,7 @@ from pigeon.config import (
     refresh_file_config,
     set_active_config_path,
     set_config_value,
+    sync_env_to_file_config,
     unset_config_value,
     write_file_config,
 )
@@ -31,6 +32,17 @@ class ConfigTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"HOME": tmp, "PIGEON_CONFIG": str(p)}, clear=True):
                 got = default_config_path()
         self.assertEqual(got, p.resolve())
+
+    def test_default_config_path_uses_config_root_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "shared-root"
+            with mock.patch.dict(
+                os.environ,
+                {"HOME": tmp, "PIGEON_CONFIG_ROOT": str(root)},
+                clear=True,
+            ):
+                got = default_config_path()
+        self.assertEqual(got, (root / "config.toml").resolve())
 
     def test_default_config_path_can_use_active_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -145,7 +157,7 @@ class ConfigTests(unittest.TestCase):
         self.assertIsNone(cfg.cache)
         self.assertEqual(cfg.remote_env, {})
 
-    def test_common_config_precedence_env_over_file(self) -> None:
+    def test_common_config_precedence_file_over_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pigeon.toml"
             path.write_text('cache = "/tmp/cache-from-file"\nnamespace = "ns-file"\nuser = "u-file"\n', encoding="utf-8")
@@ -160,8 +172,8 @@ class ConfigTests(unittest.TestCase):
                 clear=True,
             ):
                 cfg = PigeonConfig.from_sources(file_cfg)
-        self.assertEqual(str(cfg.cache_root), "/tmp/cache-from-env")
-        self.assertEqual(cfg.namespace, "ns-env")
+        self.assertEqual(str(cfg.cache_root), "/tmp/cache-from-file")
+        self.assertEqual(cfg.namespace, "ns-file")
 
     def test_common_config_fallback_to_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -209,7 +221,7 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(loaded.namespace, "alice")
         self.assertEqual(loaded.user, "alice")
         self.assertEqual(loaded.worker_max_jobs, 4)
-        self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.2, places=6)
+        self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.05, places=6)
         self.assertFalse(loaded.worker_debug)
         self.assertEqual(loaded.remote_env, {})
 
@@ -236,6 +248,25 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(loaded.route, "route-env")
         self.assertEqual(loaded.worker_route, "worker-route-env")
 
+    def test_ensure_file_config_respects_worker_env_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "cfg.toml"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "PIGEON_WORKER_MAX_JOBS": "9",
+                    "PIGEON_WORKER_POLL_INTERVAL": "0.35",
+                    "PIGEON_WORKER_DEBUG": "true",
+                },
+                clear=True,
+            ):
+                _, created = ensure_file_config(str(target))
+                loaded = load_file_config(str(target))
+        self.assertTrue(created)
+        self.assertEqual(loaded.worker_max_jobs, 9)
+        self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.35, places=6)
+        self.assertTrue(loaded.worker_debug)
+
     def test_ensure_file_config_does_not_overwrite_existing_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "cfg.toml"
@@ -260,8 +291,46 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(loaded.namespace, "refresh-user")
         self.assertEqual(loaded.user, "refresh-user")
         self.assertEqual(loaded.worker_max_jobs, 4)
-        self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.2, places=6)
+        self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.05, places=6)
         self.assertFalse(loaded.worker_debug)
+
+    def test_sync_env_to_file_config_updates_worker_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "cfg.toml"
+            target.write_text(
+                "\n".join(
+                    [
+                        'cache = "/tmp/cache-a"',
+                        'namespace = "ns-a"',
+                        "",
+                        "[worker]",
+                        "max_jobs = 2",
+                        "poll_interval = 0.1",
+                        "debug = false",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "PIGEON_WORKER_MAX_JOBS": "11",
+                    "PIGEON_WORKER_POLL_INTERVAL": "0.45",
+                    "PIGEON_WORKER_DEBUG": "on",
+                },
+                clear=True,
+            ):
+                updated, created, changed = sync_env_to_file_config(str(target))
+                loaded = load_file_config(str(target))
+        self.assertFalse(created)
+        self.assertTrue(changed)
+        self.assertEqual(updated.worker_max_jobs, 11)
+        self.assertAlmostEqual(updated.worker_poll_interval or 0.0, 0.45, places=6)
+        self.assertTrue(updated.worker_debug)
+        self.assertEqual(loaded.worker_max_jobs, 11)
+        self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.45, places=6)
+        self.assertTrue(loaded.worker_debug)
 
 
 if __name__ == "__main__":
