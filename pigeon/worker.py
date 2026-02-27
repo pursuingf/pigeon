@@ -52,6 +52,23 @@ def _route_matches(worker_route: str | None, req_route: str | None) -> bool:
     return worker_route == req_route
 
 
+def _downgrade_interactive_shell_flag(command: List[str]) -> List[str]:
+    if len(command) < 3:
+        return command
+    shell = str(command[0])
+    if shell not in {"bash", "/bin/bash", "sh", "/bin/sh", "zsh", "/bin/zsh"}:
+        return command
+    flag = str(command[1])
+    if not flag.startswith("-") or "c" not in flag[1:] or "i" not in flag[1:]:
+        return command
+    new_flag = "-" + "".join(ch for ch in flag[1:] if ch != "i")
+    if "c" not in new_flag:
+        return command
+    out = list(command)
+    out[1] = new_flag
+    return out
+
+
 def _supports_color() -> bool:
     if os.environ.get("NO_COLOR"):
         return False
@@ -243,6 +260,14 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
         os.close(slave_fd)
         _debug_log(debug, f"session={session_id} exec transport=pty", kind="transport")
     else:
+        downgraded = _downgrade_interactive_shell_flag(command)
+        if downgraded != command:
+            _debug_log(
+                debug,
+                f"session={session_id} pty unavailable, shell flag downgraded: {command[1]} -> {downgraded[1]}",
+                kind="transport",
+            )
+            command = downgraded
         append_jsonl(
             stream_path(config, session_id),
             {"type": "event", "event": "pty_fallback_to_pipes", "ts": utc_iso()},

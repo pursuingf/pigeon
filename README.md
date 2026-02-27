@@ -127,7 +127,10 @@ $PIGEON_CACHE/
 ./bin/pigeon --route cpu-pool-a codex
 ```
 
-默认会在 worker 侧按 `bash -lc "<你的命令>"` 执行，所以常用场景直接 `pigeon <cmd...>` 即可，不再需要手写 `bash -lc`。
+默认会在 worker 侧按 shell 执行：
+- 交互终端（TTY）下默认 `bash -ic "<你的命令>"`（更贴近原生交互行为，如 `ls` 颜色）
+- 非交互场景默认 `bash -lc "<你的命令>"`
+所以常用场景直接 `pigeon <cmd...>` 即可，不再需要手写 `bash -lc`。
 如果你已经写了 `pigeon bash -lc ...`，也继续兼容。
 
 客户端会把 stdout/stderr（PTY 合流）实时打印到本地终端，并支持 Ctrl-C 转发。
