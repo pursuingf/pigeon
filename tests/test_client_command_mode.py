@@ -76,10 +76,24 @@ class ClientCommandModeTests(unittest.TestCase):
         self.assertIsInstance(env, dict)
         self.assertEqual(env["FOO"], "from_config")
         self.assertEqual(env["BAR"], "bar_cfg")
+        self.assertNotIn("USER", env)
         requester = req["requester"]
         self.assertIsInstance(requester, dict)
         self.assertEqual(requester["user"], "cfg-user")
         self.assertIsNone(req["route"])
+
+    def test_build_request_does_not_forward_local_env(self) -> None:
+        with mock.patch.dict(os.environ, {"LOCAL_ONLY": "x", "USER": "local-user"}, clear=True):
+            req = _build_request(
+                command=["bash", "-lc", "echo x"],
+                cwd="/tmp",
+                session_id="sid",
+                file_config=self._cfg(),
+                route=None,
+            )
+        env = req["env"]
+        self.assertIsInstance(env, dict)
+        self.assertEqual(env, {})
 
     def test_build_request_sets_route(self) -> None:
         req = _build_request(

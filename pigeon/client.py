@@ -93,10 +93,10 @@ def _build_request(
     file_config: FileConfig,
     route: Optional[str],
 ) -> Dict[str, object]:
-    env = {k: v for k, v in os.environ.items() if isinstance(v, str)}
-    # Remote env from config wins over local env and will also override worker-side
-    # environment because request env is applied last in worker.
-    env.update(file_config.remote_env)
+    # Do not forward caller(gpu_m) environment into remote execution.
+    # Worker(cpu_m) process environment is the base, while config remote_env
+    # explicitly overrides selected keys when needed.
+    env = dict(file_config.remote_env)
     term_size = _read_terminal_size()
     return {
         "session_id": session_id,
@@ -209,19 +209,30 @@ def _normalize_exec_command(
 
 
 def _shell_prelude() -> str:
-    if os.environ.get("NO_COLOR"):
+    lines: List[str] = []
+    if _source_bashrc_enabled():
+        # Optional: load cpu-side ~/.bashrc without leaking any startup output.
+        lines.append("if [ -r ~/.bashrc ]; then . ~/.bashrc >/dev/null 2>&1 || true; fi")
+    if not os.environ.get("NO_COLOR") and sys.stdout.isatty():
+        # Keep shell startup clean (no user rc/profile), but preserve common
+        # interactive color behavior for basic tools.
+        lines.extend(
+            [
+                "shopt -s expand_aliases",
+                "alias ls='ls --color=auto'",
+                "alias grep='grep --color=auto'",
+                "alias egrep='egrep --color=auto'",
+                "alias fgrep='fgrep --color=auto'",
+            ]
+        )
+    if not lines:
         return ""
-    if not sys.stdout.isatty():
-        return ""
-    # Keep shell startup clean (no user rc/profile), but preserve common
-    # interactive color behavior for basic tools.
-    return (
-        "shopt -s expand_aliases\n"
-        "alias ls='ls --color=auto'\n"
-        "alias grep='grep --color=auto'\n"
-        "alias egrep='egrep --color=auto'\n"
-        "alias fgrep='fgrep --color=auto'\n"
-    )
+    return "\n".join(lines) + "\n"
+
+
+def _source_bashrc_enabled() -> bool:
+    raw = os.environ.get("PIGEON_SOURCE_BASHRC", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 class _TerminalMode:

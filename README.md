@@ -216,6 +216,17 @@ echo $?
 - 默认 `append_jsonl` 不做每条 `fsync`，交互延迟更低。
 - 如需最强落盘一致性，可设置 `PIGEON_APPEND_FSYNC=always`（会明显变慢）。
 
+远端环境变量来源规则：
+
+1. 命令执行时不会转发 `gpu_m` 当前 shell 的环境变量。
+2. 基础环境来自 `cpu_m` worker 进程自身环境。
+3. `config.remote_env.*` 会覆盖同名变量（用于显式注入代理等）。
+4. 如需每次命令前静默加载 `~/.bashrc`（不输出任何提示文本），设置：
+
+```bash
+export PIGEON_SOURCE_BASHRC=1
+```
+
 ## 8. 远端环境变量与 shell 展开
 
 推荐写法（避免本地 shell 提前展开）：
