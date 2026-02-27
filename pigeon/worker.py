@@ -34,7 +34,7 @@ from .common import (
     tail_jsonl,
     utc_iso,
 )
-from .config import load_file_config
+from .config import ensure_file_config
 
 
 def _normalize_route(value: object) -> str | None:
@@ -515,7 +515,9 @@ def _run_session_safe(config: PigeonConfig, session_id: str, debug: bool = False
 
 
 def run_worker(parsed_args: argparse.Namespace) -> int:
-    file_config = load_file_config(getattr(parsed_args, "config", None))
+    file_config, created = ensure_file_config(getattr(parsed_args, "config", None))
+    if created:
+        print(f"[pigeon-worker] initialized config: {file_config.path}", file=sys.stderr)
     config = PigeonConfig.from_sources(file_config)
     config.ensure_dirs()
     if parsed_args.max_jobs is not None:

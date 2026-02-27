@@ -3,14 +3,14 @@
 
 cache = "/tmp/pigeon-cache"
 namespace = "demo"
-# route = "cpu-pool-a"
+route = "cpu-pool-a"
 user = "pgroup"
 
 [worker]
 max_jobs = 4
 poll_interval = 5
 debug = true
-# route = "cpu-pool-a"
+route = "cpu-pool-a"
 
 [remote_env]
 # Example:

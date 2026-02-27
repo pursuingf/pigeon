@@ -31,7 +31,7 @@ from .common import (
     tail_jsonl,
     utc_iso,
 )
-from .config import FileConfig, load_file_config
+from .config import FileConfig, ensure_file_config
 
 
 def _read_terminal_size() -> Optional[Dict[str, int]]:
@@ -246,7 +246,9 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
         print("usage: pigeon <cmd...>", file=sys.stderr)
         return 2
 
-    file_config = load_file_config(getattr(parsed_args, "config", None))
+    file_config, created = ensure_file_config(getattr(parsed_args, "config", None))
+    if created:
+        print(f"[pigeon] initialized config: {file_config.path}", file=sys.stderr)
     config = PigeonConfig.from_sources(file_config)
     config.ensure_dirs()
 

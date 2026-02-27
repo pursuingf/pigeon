@@ -1,174 +1,273 @@
 # pigeon
 
-`pigeon` 是一个只通过共享目录通信的“命令借网执行”工具：
+`pigeon` 让你在 `gpu_m` 执行 `pigeon <cmd...>`，把命令投递到 `cpu_m` 执行。
+通信只使用共享目录（`pigeonCache`），不使用额外网络通道。
 
-- 在 `gpu_m` 执行：`pigeon <cmd...>`
-- 命令实际在 `cpu_m` 的 `pigeon worker` 上运行
-- 双方共享同一路径文件系统，命令在发起时的 `cwd` 执行并直接产生产物
+## 1. 环境准备
 
-## 设计目标覆盖
+以下条件必须满足：
 
-- 执行等价：worker 在请求中的绝对 `cwd` 执行命令
-- 默认交互：实时输出流、stdin 多轮输入、Ctrl-C 转发
-- 会话并发：每次执行一个唯一 `session_id`，多会话互相隔离
-- 同 cwd 串行：worker 对 `cwd` 做文件锁，同目录自动排队
-- 退出码一致：客户端读取 worker 状态并以相同 exit code 退出
-- 可配置缓存目录：必须设置 `PIGEON_CACHE`，命名空间由 `PIGEON_NAMESPACE` 控制
+1. `gpu_m` 和 `cpu_m` 能访问同一个共享目录（例如 `/data/shared/pigeon-cache`）。
+2. `gpu_m` 和 `cpu_m` 的工作代码目录路径一致（例如都能访问 `/data/project/repo`）。
+3. 两台机器都有 Python 3.9+。
 
-## 运行方式
-
-离线环境建议直接使用仓库内脚本（无需 `pip install`）：
+检查 Python 版本：
 
 ```bash
-./bin/pigeon --help
+python3 --version
 ```
 
-如果要全局命令，可把 `bin/` 加到 `PATH`。
+## 2. 安装命令（一次）
 
-## 配置
-
-至少需要能解析到 `cache`。推荐使用配置文件，环境变量作为覆盖。
-
-### 1) 配置文件（推荐）
-
-支持优先级顺序：
-
-1. `--config /path/to/pigeon.toml`
-2. `PIGEON_CONFIG=/path/to/pigeon.toml`
-3. 默认路径 `/home/pgroup/pxd-team/workspace/fyh/pigeon/.pigeon.toml`
-4. 兜底兼容：当前目录 `./.pigeon.toml` 或 `./pigeon.toml`
-
-示例：
+在仓库根目录执行：
 
 ```bash
-cat > .pigeon.toml <<'TOML'
-cache = "/shared/path/pigeonCache"
-namespace = "demo"
-route = "cpu-pool-a"
-user = "fyh"
+cd /data/pxd-team/workspace/fyh/pigeon
+python3 -m pip install --user -e .
+```
+
+把 `~/.local/bin` 加入 PATH（如果还没有）：
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
+source ~/.bashrc
+```
+
+确认命令可用：
+
+```bash
+pigeon --help
+```
+
+## 3. 写入全局配置（一次）
+
+默认配置文件路径：`~/.config/pigeon/config.toml`
+
+首次初始化（如果文件不存在会创建并写入默认值）：
+
+```bash
+pigeon config init
+```
+
+不手动执行 `config init` 也可以：首次运行 `pigeon worker ...` 或 `pigeon <cmd...>` 时，也会自动创建同一份配置文件。
+
+查看当前生效路径：
+
+```bash
+pigeon config path
+```
+
+`pigeon config init` 首次创建时会写入这些默认值：
+
+```toml
+cache = "/tmp/pigeon-cache"
+namespace = "$USER"
+user = "$USER"
 
 [worker]
 max_jobs = 4
 poll_interval = 0.2
 debug = false
-route = "cpu-pool-a"
-
-[remote_env]
-HTTPS_PROXY = "http://proxy.example:8080"
-HTTP_PROXY = "http://proxy.example:8080"
-MY_TOKEN = "xxx"
-TOML
 ```
 
-### 2) 环境变量（覆盖配置文件默认值）
+如果你已经设置了环境变量 `PIGEON_CACHE/PIGEON_NAMESPACE/PIGEON_USER/PIGEON_ROUTE/PIGEON_WORKER_ROUTE`，初始化时会优先使用这些环境变量值。
+
+写入最小可用配置（把路径和路由改成你的真实值）：
 
 ```bash
-export PIGEON_CONFIG=/shared/path/pigeon.toml
-export PIGEON_CACHE=/shared/path/pigeonCache
-export PIGEON_NAMESPACE=my_team_or_user
-export PIGEON_USER=my_user
-export PIGEON_ROUTE=cpu-pool-a
-# worker side可单独覆盖：
-# export PIGEON_WORKER_ROUTE=cpu-pool-a
+pigeon config set cache /data/shared/pigeon-cache
+pigeon config set namespace fyh
+pigeon config set route cpu-pool-a
 ```
 
-说明：
-- `cache/namespace/user`：环境变量优先于配置文件。
-- `route`：用于多 cpu_m/gpu_m 路由。请求带 `route`，worker 只消费同 route 的任务。
-  - client route 优先级：`--route` > `PIGEON_ROUTE` > `route`
-  - worker route 优先级：`--route` > `PIGEON_WORKER_ROUTE` > `PIGEON_ROUTE` > `worker.route` > `route`
-- `remote_env`：由配置文件注入到远端命令环境，优先级最高（覆盖本地同名环境变量和 worker 自身环境）。
-- `worker.*`：作为 `pigeon worker` 默认参数，可被命令行参数覆盖。
+如果你需要固定远端代理，写入 `remote_env`（远端优先级最高）：
 
-目录结构示例：
+```bash
+pigeon config set remote_env.HTTPS_PROXY http://proxy.example:8080
+pigeon config set remote_env.HTTP_PROXY http://proxy.example:8080
+```
+
+查看文件配置和生效值：
+
+```bash
+pigeon config show --effective
+```
+
+## 4. 在 cpu_m 启动 worker
+
+在 `cpu_m` 执行：
+
+```bash
+pigeon worker --route cpu-pool-a --max-jobs 4 --poll-interval 0.2
+```
+
+调试时打开 debug 日志（带颜色）：
+
+```bash
+pigeon worker --route cpu-pool-a --max-jobs 4 --poll-interval 0.2 --debug
+```
+
+## 5. 在 gpu_m 执行命令
+
+在 `gpu_m` 的任意项目目录执行：
+
+```bash
+cd /data/project/repo
+pigeon pwd
+pigeon ls --color=auto
+pigeon curl -I https://example.com
+```
+
+交互命令示例：
+
+```bash
+pigeon codex
+```
+
+复合 shell 命令示例：
+
+```bash
+pigeon 'read -p "name? " n; echo "hello $n"'
+```
+
+临时覆盖路由（本次命令有效）：
+
+```bash
+pigeon --route cpu-pool-b curl -I https://example.com
+```
+
+## 6. 退出码对齐验证
+
+`pigeon` 会使用远端命令的 exit code 退出。
+
+示例：
+
+```bash
+pigeon 'exit 7'
+echo $?
+```
+
+`echo $?` 会输出 `7`。
+
+## 7. 配置优先级（明确规则）
+
+配置文件路径优先级：
+
+1. `--config /path/to/file.toml`
+2. `PIGEON_CONFIG=/path/to/file.toml`
+3. `PIGEON_DEFAULT_CONFIG=/path/to/default.toml`
+4. 默认 `~/.config/pigeon/config.toml`
+
+业务参数优先级：
+
+1. `cache`：`PIGEON_CACHE` > `config.cache`
+2. `namespace`：`PIGEON_NAMESPACE` > `config.namespace` > `config.user` > `$USER` > `default`
+3. client `route`：`--route` > `PIGEON_ROUTE` > `config.route`
+4. worker `route`：`worker --route` > `PIGEON_WORKER_ROUTE` > `PIGEON_ROUTE` > `config.worker.route` > `config.route`
+5. 远端环境变量：`config.remote_env.*` 覆盖同名本地环境变量和 worker 环境变量
+
+## 8. 远端环境变量与 shell 展开
+
+推荐写法（避免本地 shell 提前展开）：
+
+```bash
+pigeon 'HTTPS_PROXY="http://proxy.example:8080" echo $HTTPS_PROXY'
+```
+
+如果你已经把代理写在 `remote_env.HTTPS_PROXY`，直接执行：
+
+```bash
+pigeon 'echo $HTTPS_PROXY'
+```
+
+## 9. 多 CPU / 多 GPU 部署方式
+
+目标：让每组 `gpu_m` 只投递到指定 `cpu_m` worker。
+
+示例：
+
+1. 在 CPU A 上启动：
+
+```bash
+pigeon worker --route cpu-pool-a
+```
+
+2. 在 CPU B 上启动：
+
+```bash
+pigeon worker --route cpu-pool-b
+```
+
+3. 在 GPU 组 A 上设置：
+
+```bash
+pigeon config set route cpu-pool-a
+```
+
+4. 在 GPU 组 B 上设置：
+
+```bash
+pigeon config set route cpu-pool-b
+```
+
+这样 worker 只会消费匹配自己 route 的会话。
+
+## 10. 常用排障命令
+
+查看配置文件路径：
+
+```bash
+pigeon config path
+```
+
+查看可配置键：
+
+```bash
+pigeon config keys
+```
+
+只看键名：
+
+```bash
+pigeon config keys --short
+```
+
+删除一个配置键：
+
+```bash
+pigeon config unset remote_env.HTTPS_PROXY
+```
+
+查看 worker 详细事件（启动/claim/锁/输入输出预览/退出码）：
+
+```bash
+pigeon worker --debug
+```
+
+如果你需要使用非默认配置文件，所有命令都可加 `--config`：
+
+```bash
+pigeon config --config /tmp/pigeon.toml show --effective
+pigeon worker --config /tmp/pigeon.toml --route cpu-pool-a
+pigeon --config /tmp/pigeon.toml curl -I https://example.com
+```
+
+## 11. 会话目录结构
+
+`cache` 路径下会生成：
 
 ```text
-$PIGEON_CACHE/
-  namespaces/
-    <namespace>/
-      sessions/
-        <session_id>/
-          request.json
-          status.json
-          stream.jsonl
-          stdin.jsonl
-          control.jsonl
-          worker.claim
-      locks/
-        <sha256(cwd)>.lock
+<cache>/namespaces/<namespace>/sessions/<session_id>/
+  request.json
+  status.json
+  stream.jsonl
+  stdin.jsonl
+  control.jsonl
+  worker.claim
 ```
 
-## 使用
+同一 `cwd` 会使用锁文件串行执行：
 
-在 `cpu_m` 启动 worker：
-
-```bash
-./bin/pigeon worker --max-jobs 4
-# 或明确指定路由
-./bin/pigeon worker --route cpu-pool-a
+```text
+<cache>/namespaces/<namespace>/locks/<sha256(cwd)>.lock
 ```
-
-需要排查交互问题时，可开启 worker debug：
-
-```bash
-./bin/pigeon worker --max-jobs 4 --debug
-```
-
-`--debug` 会打印关键节点（会话 claim、锁等待/获取、命令开始/结束）以及 stdin/stdout/stderr 的字节预览（hex + 文本）。
-支持终端颜色高亮，不同语义（队列/锁/输入/输出/信号/成功/失败）使用不同颜色，便于快速定位问题。
-
-在 `gpu_m` 执行命令（默认会按 `bash -lc` 执行）：
-
-```bash
-./bin/pigeon curl -I https://example.com
-./bin/pigeon codex
-./bin/pigeon 'read -p "name? " n; echo "hello $n"'
-# 或临时指定路由
-./bin/pigeon --route cpu-pool-a codex
-```
-
-默认会在 worker 侧按 shell 执行：
-- 交互终端（TTY）下默认 `bash -ic "<你的命令>"`（更贴近原生交互行为，如 `ls` 颜色）
-- 非交互场景默认 `bash -lc "<你的命令>"`
-所以常用场景直接 `pigeon <cmd...>` 即可，不再需要手写 `bash -lc`。
-如果你已经写了 `pigeon bash -lc ...`，也继续兼容。
-
-客户端会把 stdout/stderr（PTY 合流）实时打印到本地终端，并支持 Ctrl-C 转发。
-
-关于环境变量展开：
-- 对 `remote_env` 中的变量，`pigeon` 会在多参数模式下尽量修正本地 shell 的提前展开（例如 `pigeon HTTPS_PROXY=... echo $HTTPS_PROXY`），让结果更接近远端执行直觉。
-- 需要完全按原始 shell 字符串控制时，仍建议单引号整体传入：`pigeon 'HTTPS_PROXY=... echo $HTTPS_PROXY'`。
-
-## 多机路由建议
-
-当有多台 `cpu_m` 和多台 `gpu_m` 时，建议每个“可互通的一组”分配一个 `route`（例如 `cpu-pool-a`、`cpu-pool-b`）：
-
-- `gpu_m` 发请求时带同一个 `route`（配置文件 `route`、`PIGEON_ROUTE` 或 `--route`）
-- `cpu_m` 上 worker 配置同样的 `route`（`worker.route`、`PIGEON_WORKER_ROUTE` 或 `pigeon worker --route ...`）
-- worker 只会 claim 路由匹配的任务，避免串到别的 CPU 组
-
-## 本机模拟联调（单机）
-
-开两个终端，使用同一个 `PIGEON_CACHE`：
-
-终端 A（模拟 cpu_m）：
-
-```bash
-export PIGEON_CACHE=/tmp/pigeon-cache
-export PIGEON_NAMESPACE=demo
-./bin/pigeon worker --max-jobs 4
-```
-
-终端 B（模拟 gpu_m）：
-
-```bash
-export PIGEON_CACHE=/tmp/pigeon-cache
-export PIGEON_NAMESPACE=demo
-./bin/pigeon 'pwd; echo hi; sleep 1; echo done'
-```
-
-## 注意事项
-
-- 仅依赖共享目录，不使用额外网络通道/数据库
-- 若共享文件系统不支持跨机文件锁，需要替换为你们集群可用的锁方案
-- 当前默认把客户端环境变量带到 worker 并覆盖同名变量
