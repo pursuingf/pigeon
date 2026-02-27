@@ -15,10 +15,12 @@ class ClientCommandModeTests(unittest.TestCase):
             path=None,
             cache=None,
             namespace=None,
+            route=None,
             user=None,
             worker_max_jobs=None,
             worker_poll_interval=None,
             worker_debug=None,
+            worker_route=None,
             remote_env=remote_env or {},
         )
 
@@ -46,7 +48,13 @@ class ClientCommandModeTests(unittest.TestCase):
         file_cfg = self._cfg({"FOO": "from_config", "BAR": "bar_cfg"})
         file_cfg = FileConfig(**{**file_cfg.__dict__, "user": "cfg-user"})
         with mock.patch.dict(os.environ, {"FOO": "from_local", "USER": "local-user"}, clear=True):
-            req = _build_request(command=["bash", "-lc", "echo x"], cwd="/tmp", session_id="sid", file_config=file_cfg)
+            req = _build_request(
+                command=["bash", "-lc", "echo x"],
+                cwd="/tmp",
+                session_id="sid",
+                file_config=file_cfg,
+                route=None,
+            )
         env = req["env"]
         self.assertIsInstance(env, dict)
         self.assertEqual(env["FOO"], "from_config")
@@ -54,6 +62,17 @@ class ClientCommandModeTests(unittest.TestCase):
         requester = req["requester"]
         self.assertIsInstance(requester, dict)
         self.assertEqual(requester["user"], "cfg-user")
+        self.assertIsNone(req["route"])
+
+    def test_build_request_sets_route(self) -> None:
+        req = _build_request(
+            command=["bash", "-lc", "echo x"],
+            cwd="/tmp",
+            session_id="sid",
+            file_config=self._cfg(),
+            route="cpu-a",
+        )
+        self.assertEqual(req["route"], "cpu-a")
 
     def test_rewrite_restores_remote_env_ref_when_local_already_expanded(self) -> None:
         file_cfg = self._cfg({"HTTPS_PROXY": "http://proxy.example:8080"})

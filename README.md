@@ -44,12 +44,14 @@
 cat > .pigeon.toml <<'TOML'
 cache = "/shared/path/pigeonCache"
 namespace = "demo"
+route = "cpu-pool-a"
 user = "fyh"
 
 [worker]
 max_jobs = 4
 poll_interval = 0.2
 debug = false
+route = "cpu-pool-a"
 
 [remote_env]
 HTTPS_PROXY = "http://proxy.example:8080"
@@ -65,10 +67,16 @@ export PIGEON_CONFIG=/shared/path/pigeon.toml
 export PIGEON_CACHE=/shared/path/pigeonCache
 export PIGEON_NAMESPACE=my_team_or_user
 export PIGEON_USER=my_user
+export PIGEON_ROUTE=cpu-pool-a
+# worker side可单独覆盖：
+# export PIGEON_WORKER_ROUTE=cpu-pool-a
 ```
 
 说明：
 - `cache/namespace/user`：环境变量优先于配置文件。
+- `route`：用于多 cpu_m/gpu_m 路由。请求带 `route`，worker 只消费同 route 的任务。
+  - client route 优先级：`--route` > `PIGEON_ROUTE` > `route`
+  - worker route 优先级：`--route` > `PIGEON_WORKER_ROUTE` > `PIGEON_ROUTE` > `worker.route` > `route`
 - `remote_env`：由配置文件注入到远端命令环境，优先级最高（覆盖本地同名环境变量和 worker 自身环境）。
 - `worker.*`：作为 `pigeon worker` 默认参数，可被命令行参数覆盖。
 
@@ -96,6 +104,8 @@ $PIGEON_CACHE/
 
 ```bash
 ./bin/pigeon worker --max-jobs 4
+# 或明确指定路由
+./bin/pigeon worker --route cpu-pool-a
 ```
 
 需要排查交互问题时，可开启 worker debug：
@@ -113,6 +123,8 @@ $PIGEON_CACHE/
 ./bin/pigeon curl -I https://example.com
 ./bin/pigeon codex
 ./bin/pigeon 'read -p "name? " n; echo "hello $n"'
+# 或临时指定路由
+./bin/pigeon --route cpu-pool-a codex
 ```
 
 默认会在 worker 侧按 `bash -lc "<你的命令>"` 执行，所以常用场景直接 `pigeon <cmd...>` 即可，不再需要手写 `bash -lc`。
@@ -123,6 +135,14 @@ $PIGEON_CACHE/
 关于环境变量展开：
 - 对 `remote_env` 中的变量，`pigeon` 会在多参数模式下尽量修正本地 shell 的提前展开（例如 `pigeon HTTPS_PROXY=... echo $HTTPS_PROXY`），让结果更接近远端执行直觉。
 - 需要完全按原始 shell 字符串控制时，仍建议单引号整体传入：`pigeon 'HTTPS_PROXY=... echo $HTTPS_PROXY'`。
+
+## 多机路由建议
+
+当有多台 `cpu_m` 和多台 `gpu_m` 时，建议每个“可互通的一组”分配一个 `route`（例如 `cpu-pool-a`、`cpu-pool-b`）：
+
+- `gpu_m` 发请求时带同一个 `route`（配置文件 `route`、`PIGEON_ROUTE` 或 `--route`）
+- `cpu_m` 上 worker 配置同样的 `route`（`worker.route`、`PIGEON_WORKER_ROUTE` 或 `pigeon worker --route ...`）
+- worker 只会 claim 路由匹配的任务，避免串到别的 CPU 组
 
 ## 本机模拟联调（单机）
 

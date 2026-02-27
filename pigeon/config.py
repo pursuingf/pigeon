@@ -14,10 +14,12 @@ class FileConfig:
     path: Optional[Path]
     cache: Optional[str]
     namespace: Optional[str]
+    route: Optional[str]
     user: Optional[str]
     worker_max_jobs: Optional[int]
     worker_poll_interval: Optional[float]
     worker_debug: Optional[bool]
+    worker_route: Optional[str]
     remote_env: Dict[str, str]
 
 
@@ -78,16 +80,20 @@ def _parse_config(path: Path) -> FileConfig:
 
     cache: Optional[str] = None
     namespace: Optional[str] = None
+    route: Optional[str] = None
     user: Optional[str] = None
     worker_max_jobs: Optional[int] = None
     worker_poll_interval: Optional[float] = None
     worker_debug: Optional[bool] = None
+    worker_route: Optional[str] = None
     remote_env: Dict[str, str] = {}
 
     if "cache" in raw:
         cache = _ensure_str(raw["cache"], "cache", path)
     if "namespace" in raw:
         namespace = _ensure_str(raw["namespace"], "namespace", path)
+    if "route" in raw:
+        route = _ensure_str(raw["route"], "route", path)
     if "user" in raw:
         user = _ensure_str(raw["user"], "user", path)
 
@@ -105,6 +111,8 @@ def _parse_config(path: Path) -> FileConfig:
                 raise RuntimeError(f"{path}: 'worker.poll_interval' must be > 0")
         if "debug" in worker:
             worker_debug = _ensure_bool(worker["debug"], "worker.debug", path)
+        if "route" in worker:
+            worker_route = _ensure_str(worker["route"], "worker.route", path)
 
     r_env = raw.get("remote_env")
     if r_env is not None:
@@ -119,10 +127,12 @@ def _parse_config(path: Path) -> FileConfig:
         path=path,
         cache=cache,
         namespace=namespace,
+        route=route,
         user=user,
         worker_max_jobs=worker_max_jobs,
         worker_poll_interval=worker_poll_interval,
         worker_debug=worker_debug,
+        worker_route=worker_route,
         remote_env=remote_env,
     )
 
@@ -134,10 +144,12 @@ def load_file_config(explicit: Optional[str]) -> FileConfig:
             path=None,
             cache=None,
             namespace=None,
+            route=None,
             user=None,
             worker_max_jobs=None,
             worker_poll_interval=None,
             worker_debug=None,
+            worker_route=None,
             remote_env={},
         )
     return _parse_config(path)

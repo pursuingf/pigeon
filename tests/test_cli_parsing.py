@@ -21,6 +21,11 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(known, [])
         self.assertEqual(command, ["echo", "hello"])
 
+    def test_split_client_args_parses_route(self) -> None:
+        known, command = _split_client_args(["--route", "cpu-a", "echo", "ok"])
+        self.assertEqual(known, ["--route", "cpu-a"])
+        self.assertEqual(command, ["echo", "ok"])
+
 
 if __name__ == "__main__":
     unittest.main()

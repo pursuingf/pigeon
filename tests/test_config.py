@@ -49,12 +49,14 @@ class ConfigTests(unittest.TestCase):
                     [
                         'cache = "/tmp/cache-x"',
                         'namespace = "ns-x"',
+                        'route = "route-x"',
                         'user = "user-x"',
                         "",
                         "[worker]",
                         "max_jobs = 8",
                         "poll_interval = 0.15",
                         "debug = true",
+                        'route = "worker-route-x"',
                         "",
                         "[remote_env]",
                         'A = "1"',
@@ -66,10 +68,12 @@ class ConfigTests(unittest.TestCase):
             cfg = load_file_config(str(path))
         self.assertEqual(cfg.cache, "/tmp/cache-x")
         self.assertEqual(cfg.namespace, "ns-x")
+        self.assertEqual(cfg.route, "route-x")
         self.assertEqual(cfg.user, "user-x")
         self.assertEqual(cfg.worker_max_jobs, 8)
         self.assertAlmostEqual(cfg.worker_poll_interval or 0.0, 0.15, places=6)
         self.assertEqual(cfg.worker_debug, True)
+        self.assertEqual(cfg.worker_route, "worker-route-x")
         self.assertEqual(cfg.remote_env, {"A": "1", "B": "2"})
 
     def test_common_config_precedence_env_over_file(self) -> None:

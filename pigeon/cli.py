@@ -19,6 +19,7 @@ def _worker_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--max-jobs", type=int, default=None, help="Max concurrent session runners")
     p.add_argument("--poll-interval", type=float, default=None, help="Worker discovery poll seconds")
+    p.add_argument("--route", type=str, default=None, help="Worker route key (only pick matching routed tasks)")
     p.add_argument(
         "--debug",
         action=argparse.BooleanOptionalAction,
@@ -37,6 +38,7 @@ def _run_parser() -> argparse.ArgumentParser:
         help=f"Config path (default: $PIGEON_CONFIG, else {DEFAULT_CONFIG_PATH})",
     )
     p.add_argument("-v", "--verbose", action="store_true", help="Print session state transitions")
+    p.add_argument("--route", type=str, default=None, help="Route key for selecting worker group")
     return p
 
 
@@ -48,6 +50,17 @@ def _split_client_args(args: Sequence[str]) -> Tuple[List[str], List[str]]:
         if tok == "--":
             return known, list(args[i + 1 :])
         if tok in {"-v", "--verbose"}:
+            known.append(tok)
+            i += 1
+            continue
+        if tok == "--route":
+            if i + 1 >= len(args):
+                known.append(tok)
+                return known, []
+            known.extend([tok, args[i + 1]])
+            i += 2
+            continue
+        if tok.startswith("--route="):
             known.append(tok)
             i += 1
             continue
@@ -69,7 +82,7 @@ def _split_client_args(args: Sequence[str]) -> Tuple[List[str], List[str]]:
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help"}:
-        print("usage: pigeon <cmd...>")
+        print("usage: pigeon [--config FILE] [--route ROUTE] [-v] <cmd...>")
         print("       pigeon worker [--config FILE] [--max-jobs N] [--poll-interval S] [--debug|--no-debug]")
         print("")
         print("cache/namespace config sources (priority high -> low):")
@@ -80,6 +93,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("  PIGEON_CACHE=/path/to/shared/cache")
         print("  PIGEON_NAMESPACE=<namespace> (default: $USER)")
         print("  PIGEON_USER=<requester user>")
+        print("  PIGEON_ROUTE=<client request route>")
+        print("  PIGEON_WORKER_ROUTE=<worker consume route>")
         return 0 if args and args[0].startswith("-") else 2
 
     if args[0] == "worker":

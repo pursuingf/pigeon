@@ -48,11 +48,24 @@ def _resolve_request_user(file_config: FileConfig) -> str:
     return os.environ.get("PIGEON_USER") or file_config.user or os.environ.get("USER", "")
 
 
+def _resolve_request_route(parsed_args: argparse.Namespace, file_config: FileConfig) -> Optional[str]:
+    route = (
+        getattr(parsed_args, "route", None)
+        or os.environ.get("PIGEON_ROUTE")
+        or file_config.route
+    )
+    if route is None:
+        return None
+    route = str(route).strip()
+    return route or None
+
+
 def _build_request(
     command: Sequence[str],
     cwd: str,
     session_id: str,
     file_config: FileConfig,
+    route: Optional[str],
 ) -> Dict[str, object]:
     env = {k: v for k, v in os.environ.items() if isinstance(v, str)}
     # Remote env from config wins over local env and will also override worker-side
@@ -63,6 +76,7 @@ def _build_request(
         "session_id": session_id,
         "command": list(command),
         "cwd": cwd,
+        "route": route,
         "created_at": utc_iso(),
         "requester": {
             "host": host_name(),
@@ -237,6 +251,7 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
         cwd=cwd,
         session_id=session_id,
         file_config=file_config,
+        route=_resolve_request_route(parsed_args, file_config),
     )
     atomic_write_json(request_path(config, session_id), request)
     atomic_write_json(

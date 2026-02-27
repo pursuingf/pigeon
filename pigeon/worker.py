@@ -37,6 +37,21 @@ from .common import (
 from .config import load_file_config
 
 
+def _normalize_route(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    val = value.strip()
+    return val or None
+
+
+def _route_matches(worker_route: str | None, req_route: str | None) -> bool:
+    if req_route is None:
+        return worker_route is None
+    return worker_route == req_route
+
+
 def _supports_color() -> bool:
     if os.environ.get("NO_COLOR"):
         return False
@@ -127,7 +142,7 @@ def _update_status(config: PigeonConfig, session_id: str, state: str, **extra) -
     atomic_write_json(path, prior)
 
 
-def _discover_pending(config: PigeonConfig) -> List[str]:
+def _discover_pending(config: PigeonConfig, worker_route: str | None) -> List[str]:
     if not config.sessions_dir.exists():
         return []
     ids: List[str] = []
@@ -141,10 +156,12 @@ def _discover_pending(config: PigeonConfig) -> List[str]:
             continue
         try:
             state = read_json(st).get("state")
+            req_route = _normalize_route(read_json(req).get("route"))
         except Exception:
             continue
         if state == "pending":
-            ids.append(sid)
+            if _route_matches(worker_route, req_route):
+                ids.append(sid)
     return ids
 
 
@@ -172,7 +189,7 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
         raise RuntimeError("invalid cwd in request")
     _debug_log(
         debug,
-        f"session={session_id} exec begin cwd={cwd} cmd={_format_command(req)}",
+        f"session={session_id} exec begin route={_normalize_route(req.get('route')) or '-'} cwd={cwd} cmd={_format_command(req)}",
         kind="lifecycle",
     )
 
@@ -496,6 +513,13 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
         debug = bool(file_config.worker_debug)
     else:
         debug = False
+    worker_route = _normalize_route(
+        getattr(parsed_args, "route", None)
+        or os.environ.get("PIGEON_WORKER_ROUTE")
+        or os.environ.get("PIGEON_ROUTE")
+        or file_config.worker_route
+        or file_config.route
+    )
     stop = threading.Event()
 
     def _stop(signum, frame) -> None:
@@ -510,7 +534,7 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
     try:
         _debug_log(
             debug,
-            f"worker start host={host_name()} pid={os.getpid()} namespace={config.namespace} cache={config.cache_root}",
+            f"worker start host={host_name()} pid={os.getpid()} namespace={config.namespace} cache={config.cache_root} route={worker_route or '-'}",
             kind="lifecycle",
         )
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_jobs) as pool:
@@ -534,7 +558,7 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
 
                 capacity = max_jobs - len(futures)
                 if capacity > 0:
-                    for sid in _discover_pending(config):
+                    for sid in _discover_pending(config, worker_route):
                         if capacity <= 0:
                             break
                         if not _try_claim(config, sid):
