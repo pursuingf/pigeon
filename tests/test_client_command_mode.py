@@ -28,25 +28,25 @@ class ClientCommandModeTests(unittest.TestCase):
             remote_env=remote_env or {},
         )
 
-    def test_plain_command_is_wrapped_with_bash_lc(self) -> None:
-        wrapped = _normalize_exec_command(["codex", "--version"], self._cfg(), shell_flag="-ic")
-        self.assertEqual(wrapped[0:2], ["bash", "-ic"])
-        self.assertEqual(wrapped[2], "codex --version")
+    def test_plain_command_is_wrapped_with_clean_bash_c(self) -> None:
+        wrapped = _normalize_exec_command(["codex", "--version"], self._cfg())
+        self.assertEqual(wrapped[0:4], ["bash", "--noprofile", "--norc", "-c"])
+        self.assertEqual(wrapped[4], "codex --version")
 
     def test_shell_lc_command_is_kept(self) -> None:
         cmd = ["bash", "-lc", "echo hi"]
-        wrapped = _normalize_exec_command(cmd, self._cfg(), shell_flag="-ic")
+        wrapped = _normalize_exec_command(cmd, self._cfg())
         self.assertEqual(wrapped, cmd)
 
     def test_arguments_are_shell_escaped(self) -> None:
-        wrapped = _normalize_exec_command(["python", "-c", 'print("a b")'], self._cfg(), shell_flag="-ic")
-        self.assertEqual(wrapped[0:2], ["bash", "-ic"])
-        self.assertIn("python -c", wrapped[2])
-        self.assertIn("'print(\"a b\")'", wrapped[2])
+        wrapped = _normalize_exec_command(["python", "-c", 'print("a b")'], self._cfg())
+        self.assertEqual(wrapped[0:4], ["bash", "--noprofile", "--norc", "-c"])
+        self.assertIn("python -c", wrapped[4])
+        self.assertIn("'print(\"a b\")'", wrapped[4])
 
     def test_single_argument_shell_snippet_is_used_verbatim(self) -> None:
-        wrapped = _normalize_exec_command(["pwd; echo hi"], self._cfg(), shell_flag="-ic")
-        self.assertEqual(wrapped, ["bash", "-ic", "pwd; echo hi"])
+        wrapped = _normalize_exec_command(["pwd; echo hi"], self._cfg())
+        self.assertEqual(wrapped, ["bash", "--noprofile", "--norc", "-c", "pwd; echo hi"])
 
     def test_remote_env_from_config_has_highest_priority(self) -> None:
         file_cfg = self._cfg({"FOO": "from_config", "BAR": "bar_cfg"})
@@ -84,10 +84,9 @@ class ClientCommandModeTests(unittest.TestCase):
             wrapped = _normalize_exec_command(
                 ["echo", "http://0.0.0.0:7890"],
                 file_cfg,
-                shell_flag="-ic",
             )
-        self.assertEqual(wrapped[0:2], ["bash", "-ic"])
-        self.assertEqual(wrapped[2], "echo $HTTPS_PROXY")
+        self.assertEqual(wrapped[0:4], ["bash", "--noprofile", "--norc", "-c"])
+        self.assertEqual(wrapped[4], "echo $HTTPS_PROXY")
 
     def test_rewrite_prefers_inline_assignment_rhs(self) -> None:
         file_cfg = self._cfg({"HTTPS_PROXY": "http://proxy.example:8080"})
@@ -95,15 +94,9 @@ class ClientCommandModeTests(unittest.TestCase):
             wrapped = _normalize_exec_command(
                 ["HTTPS_PROXY=http://proxy.example:8080", "echo", "http://0.0.0.0:7890"],
                 file_cfg,
-                shell_flag="-ic",
             )
-        self.assertEqual(wrapped[0:2], ["bash", "-ic"])
-        self.assertEqual(wrapped[2], "HTTPS_PROXY=http://proxy.example:8080 echo http://proxy.example:8080")
-
-    def test_shell_flag_can_be_non_interactive_lc(self) -> None:
-        wrapped = _normalize_exec_command(["echo", "x"], self._cfg(), shell_flag="-lc")
-        self.assertEqual(wrapped[0:2], ["bash", "-lc"])
-        self.assertEqual(wrapped[2], "echo x")
+        self.assertEqual(wrapped[0:4], ["bash", "--noprofile", "--norc", "-c"])
+        self.assertEqual(wrapped[4], "HTTPS_PROXY=http://proxy.example:8080 echo http://proxy.example:8080")
 
     def test_wait_worker_timeout_default(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):

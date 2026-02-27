@@ -123,15 +123,18 @@ def _build_request(
 
 
 def _is_shell_c(command: Sequence[str]) -> bool:
-    if len(command) < 3:
+    if len(command) < 2:
         return False
     shell = str(command[0])
     if shell not in {"bash", "/bin/bash", "sh", "/bin/sh", "zsh", "/bin/zsh"}:
         return False
-    flag = str(command[1])
-    if not flag.startswith("-") or flag.startswith("--"):
-        return False
-    return "c" in flag[1:]
+    for tok in command[1:]:
+        flag = str(tok)
+        if flag == "-c":
+            return True
+        if flag.startswith("-") and not flag.startswith("--") and "c" in flag[1:]:
+            return True
+    return False
 
 
 _ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
@@ -196,16 +199,16 @@ def _rewrite_local_expanded_env_tokens(command: Sequence[str], file_config: File
 def _normalize_exec_command(
     command: Sequence[str],
     file_config: FileConfig,
-    shell_flag: str,
 ) -> List[str]:
+    shell_prefix = ["bash", "--noprofile", "--norc", "-c"]
     if _is_shell_c(command):
         return list(command)
     if len(command) == 1:
         # A single argument can be an intentional shell snippet like:
         #   pigeon 'cd x && make'
-        return ["bash", shell_flag, str(command[0])]
+        return [*shell_prefix, str(command[0])]
     rewritten = _rewrite_local_expanded_env_tokens(command, file_config)
-    return ["bash", shell_flag, _shell_join_tokens(rewritten)]
+    return [*shell_prefix, _shell_join_tokens(rewritten)]
 
 
 class _TerminalMode:
@@ -303,10 +306,9 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
     session_id = new_session_id()
     sdir = session_dir(config, session_id)
     sdir.mkdir(parents=True, exist_ok=False)
-    shell_flag = "-ic" if sys.stdin.isatty() and sys.stdout.isatty() else "-lc"
 
     request = _build_request(
-        command=_normalize_exec_command(command, file_config, shell_flag=shell_flag),
+        command=_normalize_exec_command(command, file_config),
         cwd=cwd,
         session_id=session_id,
         file_config=file_config,
