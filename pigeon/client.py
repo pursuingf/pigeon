@@ -36,6 +36,8 @@ from .common import (
 from .config import FileConfig, sync_env_to_file_config
 
 DEFAULT_WORKER_WAIT_SECONDS = 3.0
+DEFAULT_INTERACTIVE_COMMAND = "bash --noprofile --norc -i"
+FORBIDDEN_ARGV_OPERATOR_TOKENS = {"|", "||", ";", "&&", "&", ">", ">>", "<", "<<", "(", ")"}
 
 
 def _read_terminal_size() -> Optional[Dict[str, int]]:
@@ -195,9 +197,18 @@ def _rewrite_local_expanded_env_tokens(command: Sequence[str], file_config: File
 def _normalize_exec_command(
     command: Sequence[str],
     file_config: FileConfig,
+    command_mode: str = "argv",
 ) -> List[str]:
+    if command_mode == "interactive":
+        return _build_interactive_exec_command(file_config)
+
     shell_prefix = ["bash", "--noprofile", "--norc", "-c"]
-    prelude = _shell_prelude()
+    prelude = _shell_prelude(file_config)
+    if command_mode == "shell_snippet":
+        if len(command) != 1:
+            raise RuntimeError("shell_snippet mode requires a single snippet argument")
+        return [*shell_prefix, f"{prelude}{str(command[0])}"]
+
     if _is_shell_c(command):
         return list(command)
     if len(command) == 1:
@@ -208,9 +219,26 @@ def _normalize_exec_command(
     return [*shell_prefix, f"{prelude}{_shell_join_tokens(rewritten)}"]
 
 
-def _shell_prelude() -> str:
+def _build_interactive_exec_command(file_config: FileConfig) -> List[str]:
+    raw = (file_config.interactive_command or DEFAULT_INTERACTIVE_COMMAND).strip()
+    if not raw:
+        raw = DEFAULT_INTERACTIVE_COMMAND
+    try:
+        parts = shlex.split(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"invalid interactive.command: {exc}") from exc
+    if not parts:
+        raise RuntimeError("invalid interactive.command: empty command")
+    if not _source_bashrc_enabled(file_config):
+        return parts
+    quoted = " ".join(shlex.quote(p) for p in parts)
+    prelude = "if [ -r ~/.bashrc ]; then . ~/.bashrc >/dev/null 2>&1 || true; fi"
+    return ["bash", "--noprofile", "--norc", "-c", f"{prelude}\nexec {quoted}"]
+
+
+def _shell_prelude(file_config: FileConfig) -> str:
     lines: List[str] = []
-    if _source_bashrc_enabled():
+    if _source_bashrc_enabled(file_config):
         # Optional: load cpu-side ~/.bashrc without leaking any startup output.
         lines.append("if [ -r ~/.bashrc ]; then . ~/.bashrc >/dev/null 2>&1 || true; fi")
     if not os.environ.get("NO_COLOR") and sys.stdout.isatty():
@@ -230,9 +258,173 @@ def _shell_prelude() -> str:
     return "\n".join(lines) + "\n"
 
 
-def _source_bashrc_enabled() -> bool:
-    raw = os.environ.get("PIGEON_SOURCE_BASHRC", "").strip().lower()
+def _source_bashrc_enabled(file_config: FileConfig) -> bool:
+    if file_config.interactive_source_bashrc is not None:
+        return bool(file_config.interactive_source_bashrc)
+    raw = (
+        os.environ.get("PIGEON_INTERACTIVE_SOURCE_BASHRC")
+        or os.environ.get("PIGEON_SOURCE_BASHRC")
+        or ""
+    ).strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _find_ambiguous_operator_token(command: Sequence[str]) -> Optional[str]:
+    for tok in command:
+        token = str(tok)
+        if token in FORBIDDEN_ARGV_OPERATOR_TOKENS:
+            return token
+    return None
+
+
+def _supports_client_color() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    term = os.environ.get("TERM", "")
+    if term.lower() == "dumb":
+        return False
+    return sys.stderr.isatty()
+
+
+def _paint_client(text: str, color_code: str, enabled: bool) -> str:
+    if not enabled:
+        return text
+    return f"\x1b[{color_code}m{text}\x1b[0m"
+
+
+def _format_remote_env(remote_env: Dict[str, str]) -> str:
+    if not remote_env:
+        return "<none>"
+    pairs = [f"{k}={v}" for k, v in sorted(remote_env.items())]
+    return ", ".join(pairs)
+
+
+def _format_active_workers(active_workers: Sequence[Dict[str, object]]) -> List[str]:
+    if not active_workers:
+        return ["<none>"]
+    lines: List[str] = []
+    preview_limit = 3
+    for rec in active_workers[:preview_limit]:
+        worker_id = str(rec.get("worker_id") or "<unknown>")
+        host = str(rec.get("host") or "<unknown>")
+        pid = rec.get("pid")
+        route = rec.get("route")
+        updated = rec.get("updated_at")
+        pid_text = str(pid) if isinstance(pid, int) else "-"
+        route_text = str(route).strip() if isinstance(route, str) and str(route).strip() else "-"
+        updated_text = str(updated) if isinstance(updated, str) and updated else "-"
+        lines.append(
+            f"{worker_id} host={host} pid={pid_text} route={route_text} heartbeat={updated_text}"
+        )
+    if len(active_workers) > preview_limit:
+        lines.append(f"... +{len(active_workers) - preview_limit} more")
+    return lines
+
+
+def _format_exec_preview(command: Sequence[str]) -> str:
+    return " ".join(shlex.quote(str(tok)) for tok in command) if command else "<empty>"
+
+
+def _format_interactive_panel(
+    *,
+    session_id: str,
+    config: PigeonConfig,
+    cwd: str,
+    req_route: Optional[str],
+    file_config: FileConfig,
+    active_workers: Sequence[Dict[str, object]],
+    remote_command: Sequence[str],
+) -> str:
+    color = _supports_client_color()
+    title = _paint_client("Pigeon Interactive Session", "96;1", color)
+    line = _paint_client("=" * 96, "90", color)
+    section = lambda s: _paint_client(f"[{s}]", "95;1", color)
+    key = lambda k: _paint_client(f"{k:<30}", "94", color)
+    ok = lambda s: _paint_client(s, "92", color)
+    warn = lambda s: _paint_client(s, "93", color)
+
+    requester_user = file_config.user or os.environ.get("USER", "")
+    client_default_route = file_config.route or "-"
+    worker_route = req_route or file_config.worker_route or file_config.route or "-"
+    request_route = req_route or "-"
+    interactive_command = file_config.interactive_command or DEFAULT_INTERACTIVE_COMMAND
+    interactive_source_bashrc = (
+        file_config.interactive_source_bashrc
+        if file_config.interactive_source_bashrc is not None
+        else False
+    )
+    worker_max_jobs = file_config.worker_max_jobs if file_config.worker_max_jobs is not None else 4
+    worker_poll_interval = file_config.worker_poll_interval if file_config.worker_poll_interval is not None else 0.05
+    worker_debug = file_config.worker_debug if file_config.worker_debug is not None else False
+
+    worker_count = len(active_workers)
+    worker_count_text = ok(str(worker_count)) if worker_count > 0 else warn("0")
+    bashrc_text = ok("true") if interactive_source_bashrc else warn("false")
+    debug_text = ok("true") if worker_debug else warn("false")
+    remote_env_text = _format_remote_env(file_config.remote_env)
+    worker_lines = _format_active_workers(active_workers)
+
+    lines: List[str] = []
+    lines.append("")
+    lines.append(line)
+    lines.append(title)
+    lines.append(line)
+    lines.append(section("Session"))
+    lines.append(f"  {key('session_id')}: {session_id}")
+    lines.append(f"  {key('mode')}: interactive")
+    lines.append(f"  {key('cwd')}: {cwd}")
+    lines.append(f"  {key('remote.exec')}: {_format_exec_preview(remote_command)}")
+    lines.append("")
+    lines.append(section("Routing"))
+    lines.append(f"  {key('cache')}: {config.cache_root}")
+    lines.append(f"  {key('namespace')}: {config.namespace}")
+    lines.append(f"  {key('route(request)')}: {request_route}")
+    lines.append(f"  {key('route(client default)')}: {client_default_route}")
+    lines.append(f"  {key('route(worker target)')}: {worker_route}")
+    lines.append("")
+    lines.append(section("Config (effective)"))
+    lines.append(f"  {key('config.path')}: {str(file_config.path) if file_config.path is not None else '<unset>'}")
+    lines.append(f"  {key('user')}: {requester_user or '-'}")
+    lines.append(f"  {key('interactive.command')}: {interactive_command}")
+    lines.append(f"  {key('interactive.source_bashrc')}: {bashrc_text}")
+    lines.append(f"  {key('worker.max_jobs')}: {worker_max_jobs}")
+    lines.append(f"  {key('worker.poll_interval')}: {worker_poll_interval}")
+    lines.append(f"  {key('worker.debug')}: {debug_text}")
+    lines.append(f"  {key('remote_env')}: {remote_env_text}")
+    lines.append("")
+    lines.append(section("Active Workers"))
+    lines.append(f"  {key('count')}: {worker_count_text}")
+    for idx, info in enumerate(worker_lines):
+        if idx == 0:
+            lines.append(f"  {key('workers')}: {info}")
+        else:
+            lines.append(f"  {key('')}: {info}")
+    lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def _print_interactive_panel(
+    *,
+    session_id: str,
+    config: PigeonConfig,
+    cwd: str,
+    req_route: Optional[str],
+    file_config: FileConfig,
+    active_workers: Sequence[Dict[str, object]],
+    remote_command: Sequence[str],
+) -> None:
+    panel = _format_interactive_panel(
+        session_id=session_id,
+        config=config,
+        cwd=cwd,
+        req_route=req_route,
+        file_config=file_config,
+        active_workers=active_workers,
+        remote_command=remote_command,
+    )
+    print(panel, file=sys.stderr, flush=True)
 
 
 class _TerminalMode:
@@ -298,10 +490,25 @@ def _stdin_pump(config: PigeonConfig, session_id: str, stop: threading.Event) ->
         seq += 1
 
 
-def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
-    if not command:
+def run_command(command: List[str], parsed_args: argparse.Namespace, command_mode: str = "argv") -> int:
+    if command_mode not in {"argv", "shell_snippet", "interactive"}:
+        raise RuntimeError(f"invalid command mode: {command_mode}")
+    if command_mode in {"argv", "shell_snippet"} and not command:
         print("usage: pigeon <cmd...>", file=sys.stderr)
         return 2
+    if command_mode == "argv":
+        bad = _find_ambiguous_operator_token(command)
+        if bad is not None:
+            snippet = " ".join(str(x) for x in command)
+            print(
+                f"pigeon: ambiguous shell operator token {bad!r} in argv mode",
+                file=sys.stderr,
+            )
+            print(
+                f"pigeon: use shell mode instead: pigeon -c {shlex.quote(snippet)}",
+                file=sys.stderr,
+            )
+            return 2
 
     file_config, created, _ = sync_env_to_file_config(None)
     if created:
@@ -328,11 +535,22 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
 
     cwd = str(Path.cwd().resolve())
     session_id = new_session_id()
+    normalized_command = _normalize_exec_command(command, file_config, command_mode=command_mode)
+    if command_mode == "interactive":
+        _print_interactive_panel(
+            session_id=session_id,
+            config=config,
+            cwd=cwd,
+            req_route=req_route,
+            file_config=file_config,
+            active_workers=active_workers,
+            remote_command=normalized_command,
+        )
     sdir = session_dir(config, session_id)
     sdir.mkdir(parents=True, exist_ok=False)
 
     request = _build_request(
-        command=_normalize_exec_command(command, file_config),
+        command=normalized_command,
         cwd=cwd,
         session_id=session_id,
         file_config=file_config,

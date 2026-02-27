@@ -112,6 +112,8 @@ class WorkerRoutingTests(unittest.TestCase):
             "worker_poll_interval": None,
             "worker_debug": None,
             "worker_route": None,
+            "interactive_command": None,
+            "interactive_source_bashrc": None,
             "remote_env": {},
         }
         base.update(kwargs)

@@ -125,6 +125,10 @@ class ConfigTests(unittest.TestCase):
                         'route = "route-x"',
                         'user = "user-x"',
                         "",
+                        "[interactive]",
+                        'command = "bash --noprofile --norc -i"',
+                        "source_bashrc = true",
+                        "",
                         "[worker]",
                         "max_jobs = 8",
                         "poll_interval = 0.15",
@@ -143,6 +147,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(cfg.namespace, "ns-x")
         self.assertEqual(cfg.route, "route-x")
         self.assertEqual(cfg.user, "user-x")
+        self.assertEqual(cfg.interactive_command, "bash --noprofile --norc -i")
+        self.assertTrue(cfg.interactive_source_bashrc)
         self.assertEqual(cfg.worker_max_jobs, 8)
         self.assertAlmostEqual(cfg.worker_poll_interval or 0.0, 0.15, places=6)
         self.assertEqual(cfg.worker_debug, True)
@@ -155,6 +161,8 @@ class ConfigTests(unittest.TestCase):
             cfg = load_file_config(str(p))
         self.assertEqual(cfg.path, p.resolve())
         self.assertIsNone(cfg.cache)
+        self.assertIsNone(cfg.interactive_command)
+        self.assertIsNone(cfg.interactive_source_bashrc)
         self.assertEqual(cfg.remote_env, {})
 
     def test_common_config_precedence_file_over_env(self) -> None:
@@ -190,6 +198,8 @@ class ConfigTests(unittest.TestCase):
             p = Path(tmp) / "cfg.toml"
             cfg = load_file_config(str(p))
             cfg = set_config_value(cfg, "cache", "/tmp/cache-z")
+            cfg = set_config_value(cfg, "interactive.command", "bash -l -i")
+            cfg = set_config_value(cfg, "interactive.source_bashrc", "true")
             cfg = set_config_value(cfg, "worker.max_jobs", "7")
             cfg = set_config_value(cfg, "worker.debug", "true")
             cfg = set_config_value(cfg, "remote_env.HTTPS_PROXY", "http://proxy:8080")
@@ -197,6 +207,8 @@ class ConfigTests(unittest.TestCase):
             self.assertEqual(out_path, p.resolve())
             loaded = load_file_config(str(p))
         self.assertEqual(loaded.cache, "/tmp/cache-z")
+        self.assertEqual(loaded.interactive_command, "bash -l -i")
+        self.assertTrue(loaded.interactive_source_bashrc)
         self.assertEqual(loaded.worker_max_jobs, 7)
         self.assertTrue(loaded.worker_debug)
         self.assertEqual(loaded.remote_env["HTTPS_PROXY"], "http://proxy:8080")
@@ -248,6 +260,23 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(loaded.route, "route-env")
         self.assertEqual(loaded.worker_route, "worker-route-env")
 
+    def test_ensure_file_config_respects_interactive_env_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "cfg.toml"
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "PIGEON_INTERACTIVE_COMMAND": "bash -l -i",
+                    "PIGEON_INTERACTIVE_SOURCE_BASHRC": "true",
+                },
+                clear=True,
+            ):
+                _, created = ensure_file_config(str(target))
+                loaded = load_file_config(str(target))
+        self.assertTrue(created)
+        self.assertEqual(loaded.interactive_command, "bash -l -i")
+        self.assertTrue(loaded.interactive_source_bashrc)
+
     def test_ensure_file_config_respects_worker_env_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp) / "cfg.toml"
@@ -290,6 +319,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(loaded.cache, "/from-file")
         self.assertEqual(loaded.namespace, "refresh-user")
         self.assertEqual(loaded.user, "refresh-user")
+        self.assertEqual(loaded.interactive_command, "bash --noprofile --norc -i")
+        self.assertFalse(loaded.interactive_source_bashrc)
         self.assertEqual(loaded.worker_max_jobs, 4)
         self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.05, places=6)
         self.assertFalse(loaded.worker_debug)
@@ -318,6 +349,8 @@ class ConfigTests(unittest.TestCase):
                     "PIGEON_WORKER_MAX_JOBS": "11",
                     "PIGEON_WORKER_POLL_INTERVAL": "0.45",
                     "PIGEON_WORKER_DEBUG": "on",
+                    "PIGEON_INTERACTIVE_COMMAND": "bash -l -i",
+                    "PIGEON_INTERACTIVE_SOURCE_BASHRC": "yes",
                 },
                 clear=True,
             ):
@@ -325,9 +358,13 @@ class ConfigTests(unittest.TestCase):
                 loaded = load_file_config(str(target))
         self.assertFalse(created)
         self.assertTrue(changed)
+        self.assertEqual(updated.interactive_command, "bash -l -i")
+        self.assertTrue(updated.interactive_source_bashrc)
         self.assertEqual(updated.worker_max_jobs, 11)
         self.assertAlmostEqual(updated.worker_poll_interval or 0.0, 0.45, places=6)
         self.assertTrue(updated.worker_debug)
+        self.assertEqual(loaded.interactive_command, "bash -l -i")
+        self.assertTrue(loaded.interactive_source_bashrc)
         self.assertEqual(loaded.worker_max_jobs, 11)
         self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.45, places=6)
         self.assertTrue(loaded.worker_debug)

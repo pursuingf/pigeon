@@ -1,6 +1,10 @@
 # pigeon
 
-`pigeon` 让你在 `gpu_m` 执行 `pigeon <cmd...>`，把命令投递到 `cpu_m` 执行。
+`pigeon` 让你在 `gpu_m` 执行命令并投递到 `cpu_m` 执行：
+
+- `pigeon`：进入远端 interactive shell
+- `pigeon -c "<shell_snippet>"`：执行一段 shell 语句（支持 `| ; &&` 等）
+- `pigeon <cmd...>`：argv 模式执行简单命令
 通信只使用共享目录（`pigeonCache`），不使用额外网络通道。
 
 ## 1. 环境准备
@@ -88,13 +92,17 @@ cache = "/tmp/pigeon-cache"
 namespace = "$USER"
 user = "$USER"
 
+[interactive]
+command = "bash --noprofile --norc -i"
+source_bashrc = false
+
 [worker]
 max_jobs = 4
 poll_interval = 0.05
 debug = false
 ```
 
-如果你已经设置了环境变量 `PIGEON_CACHE/PIGEON_NAMESPACE/PIGEON_USER/PIGEON_ROUTE/PIGEON_WORKER_ROUTE/PIGEON_WORKER_MAX_JOBS/PIGEON_WORKER_POLL_INTERVAL/PIGEON_WORKER_DEBUG`，初始化时会写入这些环境变量值。
+如果你已经设置了环境变量 `PIGEON_CACHE/PIGEON_NAMESPACE/PIGEON_USER/PIGEON_ROUTE/PIGEON_WORKER_ROUTE/PIGEON_WORKER_MAX_JOBS/PIGEON_WORKER_POLL_INTERVAL/PIGEON_WORKER_DEBUG/PIGEON_INTERACTIVE_COMMAND/PIGEON_INTERACTIVE_SOURCE_BASHRC`，初始化时会写入这些环境变量值。
 
 写入最小可用配置（把路径和路由改成你的真实值）：
 
@@ -146,16 +154,43 @@ pigeon ls
 pigeon curl -I https://example.com
 ```
 
-交互命令示例：
+直接进入远端 interactive shell：
 
 ```bash
-pigeon codex
+pigeon
 ```
 
-复合 shell 命令示例：
+进入 interactive 前，`pigeon` 会先打印一段彩色启动面板，包含：
+
+- `session_id`、`cwd`、实际远端执行命令
+- 当前 `cache/namespace/route`
+- 生效配置（`interactive.*`、`worker.*`、`remote_env`）
+- 当前匹配到的活跃 worker 明细（`worker_id/host/pid/route/heartbeat`）
+
+在 interactive shell 里执行 `codex`：
 
 ```bash
-pigeon 'read -p "name? " n; echo "hello $n"'
+codex
+```
+
+执行复杂 shell 语句（推荐 `-c`）：
+
+```bash
+pigeon -c 'read -p "name? " n; echo "hello $n"'
+pigeon -c 'echo a | wc -c && echo done'
+```
+
+`pigeon <cmd...>` 的 argv 模式会拒绝未引用控制符 token（`| || ; && & > >> < << ( )`），以避免本地 shell / 远端 shell 语义二义性。  
+例如下面这条会直接报错并提示改写：
+
+```bash
+pigeon echo a | wc -c
+```
+
+正确写法：
+
+```bash
+pigeon -c 'echo a | wc -c'
 ```
 
 临时覆盖路由（本次命令有效）：
@@ -210,6 +245,8 @@ echo $?
 - `PIGEON_WORKER_MAX_JOBS`
 - `PIGEON_WORKER_POLL_INTERVAL`
 - `PIGEON_WORKER_DEBUG`
+- `PIGEON_INTERACTIVE_COMMAND`
+- `PIGEON_INTERACTIVE_SOURCE_BASHRC`
 
 性能开关（默认快路径）：
 
@@ -221,9 +258,11 @@ echo $?
 1. 命令执行时不会转发 `gpu_m` 当前 shell 的环境变量。
 2. 基础环境来自 `cpu_m` worker 进程自身环境。
 3. `config.remote_env.*` 会覆盖同名变量（用于显式注入代理等）。
-4. 如需每次命令前静默加载 `~/.bashrc`（不输出任何提示文本），设置：
+4. 如需每次命令前静默加载 `~/.bashrc`（不输出任何提示文本），设置（兼容旧变量名）：
 
 ```bash
+export PIGEON_INTERACTIVE_SOURCE_BASHRC=1
+# backward-compatible:
 export PIGEON_SOURCE_BASHRC=1
 ```
 

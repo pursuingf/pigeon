@@ -40,6 +40,13 @@ def _run_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true", help="Print session state transitions")
     p.add_argument("--route", type=str, default=None, help="Route key for selecting worker group")
     p.add_argument(
+        "-c",
+        "--command",
+        type=str,
+        default=None,
+        help="Execute shell snippet remotely (supports | ; && etc)",
+    )
+    p.add_argument(
         "--wait-worker",
         type=float,
         default=None,
@@ -93,6 +100,17 @@ def _split_client_args(args: Sequence[str]) -> Tuple[List[str], List[str]]:
             known.append(tok)
             i += 1
             continue
+        if tok in {"-c", "--command"}:
+            if i + 1 >= len(args):
+                known.append(tok)
+                return known, []
+            known.extend([tok, args[i + 1]])
+            i += 2
+            continue
+        if tok.startswith("--command="):
+            known.append(tok)
+            i += 1
+            continue
         if tok == "--wait-worker":
             if i + 1 >= len(args):
                 known.append(tok)
@@ -123,6 +141,12 @@ def _print_effective(file_cfg) -> None:
     worker_max_jobs = file_cfg.worker_max_jobs if file_cfg.worker_max_jobs is not None else 4
     worker_poll = file_cfg.worker_poll_interval if file_cfg.worker_poll_interval is not None else 0.05
     worker_debug = file_cfg.worker_debug if file_cfg.worker_debug is not None else False
+    interactive_command = (
+        file_cfg.interactive_command if file_cfg.interactive_command is not None else "bash --noprofile --norc -i"
+    )
+    interactive_source_bashrc = (
+        file_cfg.interactive_source_bashrc if file_cfg.interactive_source_bashrc is not None else False
+    )
 
     print("[effective]")
     print(f"cache={_fmt_value(cache)}")
@@ -133,6 +157,8 @@ def _print_effective(file_cfg) -> None:
     print(f"worker.max_jobs={_fmt_value(worker_max_jobs)}")
     print(f"worker.poll_interval={_fmt_value(worker_poll)}")
     print(f"worker.debug={_fmt_value(worker_debug)}")
+    print(f"interactive.command={_fmt_value(interactive_command)}")
+    print(f"interactive.source_bashrc={_fmt_value(interactive_source_bashrc)}")
 
 
 def _run_config(parsed_args: argparse.Namespace) -> int:
@@ -220,10 +246,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args and (args[0] == "--config" or args[0].startswith("--config=")):
         print("pigeon: '--config' has been removed; use 'pigeon config path <FILE>'", file=sys.stderr)
         return 2
-    if not args or args[0] in {"-h", "--help"}:
-        print("usage: pigeon [--route ROUTE] [--wait-worker S] [-v] <cmd...>")
+    if not args:
+        known = _run_parser().parse_args([])
+        return run_command(command=[], parsed_args=known, command_mode="interactive")
+    if args and args[0] in {"-h", "--help"}:
+        print("usage: pigeon [--route ROUTE] [--wait-worker S] [-v] [-c COMMAND] [<cmd...>]")
         print("       pigeon worker [--max-jobs N] [--poll-interval S] [--debug|--no-debug]")
         print("       pigeon config {init|refresh|path|show|set|unset|keys} ...")
+        print("")
+        print("run modes:")
+        print("  pigeon                  # interactive remote shell")
+        print("  pigeon -c \"cmd | ...\"   # shell snippet mode")
+        print("  pigeon <cmd...>         # argv mode (shell operators rejected)")
         print("")
         print("config path source (unified):")
         print("  pigeon config path <FILE>  <=>  PIGEON_CONFIG=<FILE>")
@@ -235,8 +269,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("  PIGEON_USER=<requester user>")
         print("  PIGEON_ROUTE=<client request route>")
         print("  PIGEON_WORKER_ROUTE=<worker consume route>")
+        print("  PIGEON_INTERACTIVE_COMMAND=<interactive shell command>")
+        print("  PIGEON_INTERACTIVE_SOURCE_BASHRC=<bool>")
         print("  PIGEON_WAIT_WORKER=<seconds> (default: 3.0)")
-        return 0 if args and args[0].startswith("-") else 2
+        return 0
 
     if args[0] == "worker":
         parsed = _worker_parser().parse_args(args[1:])
@@ -252,10 +288,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("pigeon: '--config' has been removed; use 'pigeon config path <FILE>'", file=sys.stderr)
         return 2
     known = run_parser.parse_args(known_args)
-    if not command:
-        print("usage: pigeon [--route ROUTE] [--wait-worker S] [-v] <cmd...>", file=sys.stderr)
+    if known.command is not None and command:
+        print("pigeon: '-c/--command' cannot be combined with <cmd...>", file=sys.stderr)
         return 2
-    return run_command(command=command, parsed_args=known)
+    if known.command is not None:
+        return run_command(command=[known.command], parsed_args=known, command_mode="shell_snippet")
+    if not command:
+        return run_command(command=[], parsed_args=known, command_mode="interactive")
+    return run_command(command=command, parsed_args=known, command_mode="argv")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,8 @@ DEFAULT_BOOTSTRAP_CACHE = "/tmp/pigeon-cache"
 DEFAULT_BOOTSTRAP_WORKER_MAX_JOBS = 4
 DEFAULT_BOOTSTRAP_WORKER_POLL_INTERVAL = 0.05
 DEFAULT_BOOTSTRAP_WORKER_DEBUG = False
+DEFAULT_BOOTSTRAP_INTERACTIVE_COMMAND = "bash --noprofile --norc -i"
+DEFAULT_BOOTSTRAP_INTERACTIVE_SOURCE_BASHRC = False
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -28,6 +30,8 @@ _CONFIG_KEYS = (
     "namespace",
     "route",
     "user",
+    "interactive.command",
+    "interactive.source_bashrc",
     "worker.max_jobs",
     "worker.poll_interval",
     "worker.debug",
@@ -47,6 +51,8 @@ class FileConfig:
     worker_poll_interval: Optional[float]
     worker_debug: Optional[bool]
     worker_route: Optional[str]
+    interactive_command: Optional[str]
+    interactive_source_bashrc: Optional[bool]
     remote_env: Dict[str, str]
 
 
@@ -142,6 +148,8 @@ def _empty_file_config(path: Optional[Path]) -> FileConfig:
         worker_poll_interval=None,
         worker_debug=None,
         worker_route=None,
+        interactive_command=None,
+        interactive_source_bashrc=None,
         remote_env={},
     )
 
@@ -161,8 +169,12 @@ def _bootstrap_file_config(path: Path) -> FileConfig:
         _env_positive_float("PIGEON_WORKER_POLL_INTERVAL") or DEFAULT_BOOTSTRAP_WORKER_POLL_INTERVAL
     )
     worker_debug = _env_bool("PIGEON_WORKER_DEBUG")
+    interactive_command = _env_non_empty("PIGEON_INTERACTIVE_COMMAND") or DEFAULT_BOOTSTRAP_INTERACTIVE_COMMAND
+    interactive_source_bashrc = _env_interactive_source_bashrc()
     if worker_debug is None:
         worker_debug = DEFAULT_BOOTSTRAP_WORKER_DEBUG
+    if interactive_source_bashrc is None:
+        interactive_source_bashrc = DEFAULT_BOOTSTRAP_INTERACTIVE_SOURCE_BASHRC
 
     return FileConfig(
         path=path,
@@ -174,6 +186,8 @@ def _bootstrap_file_config(path: Path) -> FileConfig:
         worker_poll_interval=worker_poll_interval,
         worker_debug=worker_debug,
         worker_route=worker_route,
+        interactive_command=interactive_command,
+        interactive_source_bashrc=interactive_source_bashrc,
         remote_env={},
     )
 
@@ -224,6 +238,8 @@ def _parse_config(path: Path) -> FileConfig:
     worker_poll_interval: Optional[float] = None
     worker_debug: Optional[bool] = None
     worker_route: Optional[str] = None
+    interactive_command: Optional[str] = None
+    interactive_source_bashrc: Optional[bool] = None
     remote_env: Dict[str, str] = {}
 
     if "cache" in raw:
@@ -252,6 +268,17 @@ def _parse_config(path: Path) -> FileConfig:
         if "route" in worker:
             worker_route = _ensure_str(worker["route"], "worker.route", path)
 
+    interactive = raw.get("interactive")
+    if interactive is not None:
+        if not isinstance(interactive, dict):
+            raise RuntimeError(f"{path}: 'interactive' must be table")
+        if "command" in interactive:
+            interactive_command = _ensure_str(interactive["command"], "interactive.command", path)
+        if "source_bashrc" in interactive:
+            interactive_source_bashrc = _ensure_bool(
+                interactive["source_bashrc"], "interactive.source_bashrc", path
+            )
+
     r_env = raw.get("remote_env")
     if r_env is not None:
         if not isinstance(r_env, dict):
@@ -271,6 +298,8 @@ def _parse_config(path: Path) -> FileConfig:
         worker_poll_interval=worker_poll_interval,
         worker_debug=worker_debug,
         worker_route=worker_route,
+        interactive_command=interactive_command,
+        interactive_source_bashrc=interactive_source_bashrc,
         remote_env=remote_env,
     )
 
@@ -307,6 +336,14 @@ def _fill_missing_defaults(cfg: FileConfig, explicit: Optional[str]) -> FileConf
         ),
         worker_debug=cfg.worker_debug if cfg.worker_debug is not None else base.worker_debug,
         worker_route=cfg.worker_route if cfg.worker_route is not None else base.worker_route,
+        interactive_command=(
+            cfg.interactive_command if cfg.interactive_command is not None else base.interactive_command
+        ),
+        interactive_source_bashrc=(
+            cfg.interactive_source_bashrc
+            if cfg.interactive_source_bashrc is not None
+            else base.interactive_source_bashrc
+        ),
         remote_env=dict(cfg.remote_env),
     )
 
@@ -369,6 +406,14 @@ def _env_bool(name: str) -> Optional[bool]:
     raise RuntimeError(f"invalid boolean env {name}: {raw!r}")
 
 
+def _env_interactive_source_bashrc() -> Optional[bool]:
+    by_new = _env_bool("PIGEON_INTERACTIVE_SOURCE_BASHRC")
+    if by_new is not None:
+        return by_new
+    # Backward-compatible alias.
+    return _env_bool("PIGEON_SOURCE_BASHRC")
+
+
 def sync_env_to_file_config(explicit: Optional[str]) -> Tuple[FileConfig, bool, bool]:
     cfg, created = ensure_file_config(explicit)
     updated = cfg
@@ -380,6 +425,8 @@ def sync_env_to_file_config(explicit: Optional[str]) -> Tuple[FileConfig, bool, 
     worker_max_jobs = _env_positive_int("PIGEON_WORKER_MAX_JOBS")
     worker_poll_interval = _env_positive_float("PIGEON_WORKER_POLL_INTERVAL")
     worker_debug = _env_bool("PIGEON_WORKER_DEBUG")
+    interactive_command = _env_non_empty("PIGEON_INTERACTIVE_COMMAND")
+    interactive_source_bashrc = _env_interactive_source_bashrc()
 
     if cache is not None:
         updated = replace(updated, cache=cache)
@@ -397,6 +444,10 @@ def sync_env_to_file_config(explicit: Optional[str]) -> Tuple[FileConfig, bool, 
         updated = replace(updated, worker_poll_interval=worker_poll_interval)
     if worker_debug is not None:
         updated = replace(updated, worker_debug=worker_debug)
+    if interactive_command is not None:
+        updated = replace(updated, interactive_command=interactive_command)
+    if interactive_source_bashrc is not None:
+        updated = replace(updated, interactive_source_bashrc=interactive_source_bashrc)
 
     changed = config_to_toml(cfg) != config_to_toml(updated)
     if created or changed:
@@ -431,6 +482,10 @@ def set_config_value(cfg: FileConfig, key: str, value: str) -> FileConfig:
         return replace(cfg, route=_non_empty(value, k))
     if k == "user":
         return replace(cfg, user=_non_empty(value, k))
+    if k == "interactive.command":
+        return replace(cfg, interactive_command=_non_empty(value, k))
+    if k == "interactive.source_bashrc":
+        return replace(cfg, interactive_source_bashrc=_parse_bool_literal(value, k))
     if k == "worker.max_jobs":
         n = int(value)
         if n <= 0:
@@ -465,6 +520,10 @@ def unset_config_value(cfg: FileConfig, key: str) -> FileConfig:
         return replace(cfg, route=None)
     if k == "user":
         return replace(cfg, user=None)
+    if k == "interactive.command":
+        return replace(cfg, interactive_command=None)
+    if k == "interactive.source_bashrc":
+        return replace(cfg, interactive_source_bashrc=None)
     if k == "worker.max_jobs":
         return replace(cfg, worker_max_jobs=None)
     if k == "worker.poll_interval":
@@ -497,6 +556,16 @@ def config_to_toml(cfg: FileConfig) -> str:
         lines.append(f"route = {_q(cfg.route)}")
     if cfg.user is not None:
         lines.append(f"user = {_q(cfg.user)}")
+
+    has_interactive = any(x is not None for x in (cfg.interactive_command, cfg.interactive_source_bashrc))
+    if has_interactive:
+        if lines:
+            lines.append("")
+        lines.append("[interactive]")
+        if cfg.interactive_command is not None:
+            lines.append(f"command = {_q(cfg.interactive_command)}")
+        if cfg.interactive_source_bashrc is not None:
+            lines.append(f"source_bashrc = {'true' if cfg.interactive_source_bashrc else 'false'}")
 
     has_worker = any(
         x is not None

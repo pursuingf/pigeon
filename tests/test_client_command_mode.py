@@ -4,15 +4,20 @@ import argparse
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 from unittest import mock
 
 from pigeon.client import (
     _build_request,
+    _find_ambiguous_operator_token,
+    _format_interactive_panel,
     _normalize_exec_command,
     _resolve_worker_wait_timeout,
     _shell_prelude,
     _wait_for_worker,
+    run_command,
 )
 from pigeon.common import PigeonConfig, now_ts, write_worker_heartbeat
 from pigeon.config import FileConfig
@@ -31,6 +36,8 @@ class ClientCommandModeTests(unittest.TestCase):
             worker_poll_interval=None,
             worker_debug=None,
             worker_route=None,
+            interactive_command=None,
+            interactive_source_bashrc=None,
             remote_env=remote_env or {},
         )
 
@@ -38,6 +45,20 @@ class ClientCommandModeTests(unittest.TestCase):
         wrapped = _normalize_exec_command(["codex", "--version"], self._cfg())
         self.assertEqual(wrapped[0:4], ["bash", "--noprofile", "--norc", "-c"])
         self.assertEqual(wrapped[4], "codex --version")
+
+    def test_shell_snippet_mode_uses_single_argument(self) -> None:
+        wrapped = _normalize_exec_command(["echo a | wc -c"], self._cfg(), command_mode="shell_snippet")
+        self.assertEqual(wrapped[0:4], ["bash", "--noprofile", "--norc", "-c"])
+        self.assertEqual(wrapped[4], "echo a | wc -c")
+
+    def test_interactive_mode_uses_default_command(self) -> None:
+        wrapped = _normalize_exec_command([], self._cfg(), command_mode="interactive")
+        self.assertEqual(wrapped, ["bash", "--noprofile", "--norc", "-i"])
+
+    def test_interactive_mode_uses_configured_command(self) -> None:
+        cfg = FileConfig(**{**self._cfg().__dict__, "interactive_command": "zsh -i"})
+        wrapped = _normalize_exec_command([], cfg, command_mode="interactive")
+        self.assertEqual(wrapped, ["zsh", "-i"])
 
     def test_shell_lc_command_is_kept(self) -> None:
         cmd = ["bash", "-lc", "echo hi"]
@@ -57,9 +78,16 @@ class ClientCommandModeTests(unittest.TestCase):
     def test_shell_prelude_enables_color_aliases_for_tty(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch("pigeon.client.sys.stdout.isatty", return_value=True):
-                prelude = _shell_prelude()
+                prelude = _shell_prelude(self._cfg())
         self.assertIn("alias ls='ls --color=auto'\n", prelude)
         self.assertTrue(prelude.endswith("\n"))
+
+    def test_shell_prelude_can_silently_source_bashrc(self) -> None:
+        cfg = FileConfig(**{**self._cfg().__dict__, "interactive_source_bashrc": True})
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("pigeon.client.sys.stdout.isatty", return_value=False):
+                prelude = _shell_prelude(cfg)
+        self.assertIn(". ~/.bashrc >/dev/null 2>&1", prelude)
 
     def test_remote_env_from_config_has_highest_priority(self) -> None:
         file_cfg = self._cfg({"FOO": "from_config", "BAR": "bar_cfg"})
@@ -94,6 +122,116 @@ class ClientCommandModeTests(unittest.TestCase):
         env = req["env"]
         self.assertIsInstance(env, dict)
         self.assertEqual(env, {})
+
+    def test_ambiguous_operator_token_detection(self) -> None:
+        self.assertEqual(_find_ambiguous_operator_token(["echo", "|", "wc"]), "|")
+        self.assertEqual(_find_ambiguous_operator_token(["echo", "&&", "true"]), "&&")
+        self.assertEqual(_find_ambiguous_operator_token(["echo", "value"]), None)
+
+    def test_run_command_rejects_ambiguous_operator_tokens(self) -> None:
+        err = StringIO()
+        args = argparse.Namespace(verbose=False, route=None, wait_worker=0.0)
+        with redirect_stderr(err):
+            rc = run_command(["echo", "|", "wc"], args, command_mode="argv")
+        self.assertEqual(rc, 2)
+        self.assertIn("ambiguous shell operator", err.getvalue())
+        self.assertIn("pigeon -c", err.getvalue())
+
+    def test_format_interactive_panel_contains_key_fields(self) -> None:
+        cfg = FileConfig(
+            **{
+                **self._cfg({"HTTPS_PROXY": "http://proxy:8080"}).__dict__,
+                "path": Path("/tmp/pigeon.toml"),
+                "route": "cpu-a",
+                "worker_route": "cpu-a",
+                "worker_max_jobs": 8,
+                "worker_poll_interval": 0.2,
+                "worker_debug": True,
+                "interactive_command": "bash --noprofile --norc -i",
+                "interactive_source_bashrc": False,
+            }
+        )
+        p_cfg = PigeonConfig(cache_root=Path("/tmp/pigeon-cache"), namespace="ns-a")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch("pigeon.client.sys.stderr.isatty", return_value=False):
+                out = _format_interactive_panel(
+                    session_id="sid-a",
+                    config=p_cfg,
+                    cwd="/work/repo",
+                    req_route="cpu-a",
+                    file_config=cfg,
+                    active_workers=[
+                        {
+                            "worker_id": "w1",
+                            "host": "cpu-a",
+                            "pid": 1234,
+                            "route": "cpu-a",
+                            "updated_at": "2026-02-27T00:00:00.000000Z",
+                        },
+                        {
+                            "worker_id": "w2",
+                            "host": "cpu-a",
+                            "pid": 1235,
+                            "route": "cpu-a",
+                            "updated_at": "2026-02-27T00:00:01.000000Z",
+                        },
+                    ],
+                    remote_command=["bash", "--noprofile", "--norc", "-i"],
+                )
+        self.assertIn("Pigeon Interactive", out)
+        self.assertIn("session_id", out)
+        self.assertIn("config.path", out)
+        self.assertIn("route(request)", out)
+        self.assertIn("Active Workers", out)
+        self.assertIn("w1 host=cpu-a pid=1234 route=cpu-a", out)
+        self.assertIn("remote.exec", out)
+        self.assertIn("HTTPS_PROXY=http://proxy:8080", out)
+
+    def test_format_interactive_panel_color_toggle(self) -> None:
+        cfg = self._cfg()
+        p_cfg = PigeonConfig(cache_root=Path("/tmp/pigeon-cache"), namespace="ns-a")
+        with mock.patch.dict(os.environ, {"FORCE_COLOR": "1"}, clear=True):
+            with mock.patch("pigeon.client.sys.stderr.isatty", return_value=False):
+                colored = _format_interactive_panel(
+                    session_id="sid-c",
+                    config=p_cfg,
+                    cwd="/tmp",
+                    req_route=None,
+                    file_config=cfg,
+                    active_workers=[{"worker_id": "w1"}],
+                    remote_command=["bash", "--noprofile", "--norc", "-i"],
+                )
+        self.assertIn("\x1b[", colored)
+        with mock.patch.dict(os.environ, {"NO_COLOR": "1"}, clear=True):
+            with mock.patch("pigeon.client.sys.stderr.isatty", return_value=True):
+                plain = _format_interactive_panel(
+                    session_id="sid-p",
+                    config=p_cfg,
+                    cwd="/tmp",
+                    req_route=None,
+                    file_config=cfg,
+                    active_workers=[{"worker_id": "w1"}],
+                    remote_command=["bash", "--noprofile", "--norc", "-i"],
+                )
+        self.assertNotIn("\x1b[", plain)
+
+    def test_run_command_interactive_prints_panel_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "cfg.toml"
+            cache_root = Path(tmp) / "cache"
+            env = {
+                "PIGEON_CONFIG": str(cfg_path),
+                "PIGEON_CACHE": str(cache_root),
+                "PIGEON_NAMESPACE": "ns-test",
+            }
+            args = argparse.Namespace(verbose=False, route=None, wait_worker=0.0)
+            with mock.patch.dict(os.environ, env, clear=True):
+                with mock.patch("pigeon.client._wait_for_worker", return_value=[{"worker_id": "w1"}]):
+                    with mock.patch("pigeon.client.discover_active_workers", return_value=[]):
+                        with mock.patch("pigeon.client._print_interactive_panel") as panel_mock:
+                            rc = run_command([], args, command_mode="interactive")
+        self.assertEqual(rc, 4)
+        panel_mock.assert_called_once()
 
     def test_build_request_sets_route(self) -> None:
         req = _build_request(

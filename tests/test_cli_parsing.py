@@ -37,6 +37,11 @@ class CliParsingTests(unittest.TestCase):
         self.assertEqual(known, ["--wait-worker", "1.5"])
         self.assertEqual(command, ["echo", "ok"])
 
+    def test_split_client_args_parses_shell_command_flag(self) -> None:
+        known, command = _split_client_args(["-c", "echo a | wc -c"])
+        self.assertEqual(known, ["-c", "echo a | wc -c"])
+        self.assertEqual(command, [])
+
     def test_main_config_only_refreshes_target_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "cfg.toml"
@@ -63,6 +68,28 @@ class CliParsingTests(unittest.TestCase):
                 rc = main(["--config", "/tmp/x.toml"])
         self.assertEqual(rc, 2)
         self.assertIn("--config", err.getvalue())
+
+    def test_main_no_args_enters_interactive_mode(self) -> None:
+        with mock.patch("pigeon.cli.run_command", return_value=0) as mocked:
+            rc = main([])
+        self.assertEqual(rc, 0)
+        self.assertEqual(mocked.call_args.kwargs["command_mode"], "interactive")
+        self.assertEqual(mocked.call_args.kwargs["command"], [])
+
+    def test_main_c_mode_uses_shell_snippet(self) -> None:
+        with mock.patch("pigeon.cli.run_command", return_value=0) as mocked:
+            rc = main(["-c", "echo a | wc -c"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(mocked.call_args.kwargs["command_mode"], "shell_snippet")
+        self.assertEqual(mocked.call_args.kwargs["command"], ["echo a | wc -c"])
+
+    def test_main_rejects_c_and_argv_mix(self) -> None:
+        err = StringIO()
+        with redirect_stdout(StringIO()):
+            with mock.patch("sys.stderr", err):
+                rc = main(["-c", "echo hi", "ls"])
+        self.assertEqual(rc, 2)
+        self.assertIn("cannot be combined", err.getvalue())
 
 
 if __name__ == "__main__":
