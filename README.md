@@ -42,6 +42,13 @@ pigeon --help
 ## 3. 写入全局配置（一次）
 
 默认配置文件路径：`~/.config/pigeon/config.toml`
+如果要跨 `gpu_m/cpu_m` 共享同一份配置，先设置：
+
+```bash
+export PIGEON_CONFIG_DIR=/data/shared/pigeon-config
+```
+
+设置后默认配置文件会变成：`/data/shared/pigeon-config/config.toml`
 
 首次初始化（如果文件不存在会创建并写入默认值）：
 
@@ -169,7 +176,8 @@ echo $?
 1. `--config /path/to/file.toml`
 2. `PIGEON_CONFIG=/path/to/file.toml`
 3. `PIGEON_DEFAULT_CONFIG=/path/to/default.toml`
-4. 默认 `~/.config/pigeon/config.toml`
+4. `PIGEON_CONFIG_DIR=/path/to/dir`（实际文件是 `/path/to/dir/config.toml`）
+5. 默认 `~/.config/pigeon/config.toml`
 
 业务参数优先级：
 

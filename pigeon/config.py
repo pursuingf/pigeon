@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional, Tuple
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pigeon" / "config.toml"
 DEFAULT_CONFIG_ENV = "PIGEON_DEFAULT_CONFIG"
+DEFAULT_CONFIG_DIR_ENV = "PIGEON_CONFIG_DIR"
+DEFAULT_CONFIG_FILENAME = "config.toml"
 DEFAULT_BOOTSTRAP_CACHE = "/tmp/pigeon-cache"
 DEFAULT_BOOTSTRAP_WORKER_MAX_JOBS = 4
 DEFAULT_BOOTSTRAP_WORKER_POLL_INTERVAL = 0.2
@@ -53,9 +55,13 @@ def configurable_keys() -> tuple[str, ...]:
 
 
 def default_config_path() -> Path:
-    by_env = os.environ.get(DEFAULT_CONFIG_ENV)
-    raw = by_env if by_env else str(DEFAULT_CONFIG_PATH)
-    return Path(raw).expanduser().resolve()
+    by_file = os.environ.get(DEFAULT_CONFIG_ENV)
+    if by_file:
+        return Path(by_file).expanduser().resolve()
+    by_dir = os.environ.get(DEFAULT_CONFIG_DIR_ENV)
+    if by_dir:
+        return (Path(by_dir).expanduser() / DEFAULT_CONFIG_FILENAME).resolve()
+    return DEFAULT_CONFIG_PATH.expanduser().resolve()
 
 
 def config_target_path(explicit: Optional[str]) -> Path:

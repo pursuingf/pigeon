@@ -29,21 +29,39 @@ class ConfigTests(unittest.TestCase):
                 got = default_config_path()
         self.assertEqual(got, p.resolve())
 
+    def test_default_config_path_can_use_config_dir_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.dict(os.environ, {"PIGEON_CONFIG_DIR": tmp}, clear=True):
+                got = default_config_path()
+        self.assertEqual(got, (Path(tmp) / "config.toml").resolve())
+
     def test_config_target_path_priority(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             explicit = Path(tmp) / "explicit.toml"
             by_env = Path(tmp) / "env.toml"
             by_default = Path(tmp) / "default.toml"
+            by_dir = Path(tmp) / "cfg-dir"
             with mock.patch.dict(
                 os.environ,
-                {"PIGEON_CONFIG": str(by_env), "PIGEON_DEFAULT_CONFIG": str(by_default)},
+                {
+                    "PIGEON_CONFIG": str(by_env),
+                    "PIGEON_DEFAULT_CONFIG": str(by_default),
+                    "PIGEON_CONFIG_DIR": str(by_dir),
+                },
                 clear=True,
             ):
                 self.assertEqual(config_target_path(str(explicit)), explicit.resolve())
                 self.assertEqual(config_target_path(None), by_env.resolve())
 
-            with mock.patch.dict(os.environ, {"PIGEON_DEFAULT_CONFIG": str(by_default)}, clear=True):
+            with mock.patch.dict(
+                os.environ,
+                {"PIGEON_DEFAULT_CONFIG": str(by_default), "PIGEON_CONFIG_DIR": str(by_dir)},
+                clear=True,
+            ):
                 self.assertEqual(config_target_path(None), by_default.resolve())
+
+            with mock.patch.dict(os.environ, {"PIGEON_CONFIG_DIR": str(by_dir)}, clear=True):
+                self.assertEqual(config_target_path(None), (by_dir / "config.toml").resolve())
 
     def test_discover_returns_none_if_target_does_not_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
