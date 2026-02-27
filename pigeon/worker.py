@@ -40,7 +40,7 @@ from .common import (
     utc_iso,
     write_worker_heartbeat,
 )
-from .config import FileConfig, ensure_file_config, load_file_config
+from .config import FileConfig, config_target_path, ensure_file_config, load_file_config
 
 WORKER_CONFIG_RELOAD_INTERVAL_SECONDS = 1.0
 
@@ -542,7 +542,7 @@ def _run_session_safe(config: PigeonConfig, session_id: str, debug: bool = False
 
 
 def run_worker(parsed_args: argparse.Namespace) -> int:
-    file_config, created = ensure_file_config(getattr(parsed_args, "config", None))
+    file_config, created = ensure_file_config(None)
     if created:
         print(f"[pigeon-worker] initialized config: {file_config.path}", file=sys.stderr)
     config = PigeonConfig.from_sources(file_config)
@@ -605,6 +605,9 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
                 now = now_ts()
                 if config_file_path and now >= next_config_reload:
                     try:
+                        latest_path = str(config_target_path(None))
+                        if latest_path != config_file_path:
+                            config_file_path = latest_path
                         fresh_cfg = load_file_config(config_file_path)
                         new_poll = _resolve_worker_poll_interval(parsed_args, fresh_cfg)
                         new_debug = _resolve_worker_debug(parsed_args, fresh_cfg)

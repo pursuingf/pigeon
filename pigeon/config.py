@@ -9,9 +9,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pigeon" / "config.toml"
-DEFAULT_CONFIG_ENV = "PIGEON_DEFAULT_CONFIG"
-DEFAULT_CONFIG_DIR_ENV = "PIGEON_CONFIG_DIR"
+ACTIVE_CONFIG_ENV = "PIGEON_CONFIG"
 DEFAULT_CONFIG_FILENAME = "config.toml"
 ACTIVE_CONFIG_POINTER_FILENAME = "active_config_path"
 DEFAULT_BOOTSTRAP_CACHE = "/tmp/pigeon-cache"
@@ -95,12 +93,17 @@ def set_active_config_path(path: Path) -> Path:
 
 
 def default_config_path() -> Path:
-    by_file = os.environ.get(DEFAULT_CONFIG_ENV)
-    if by_file:
-        return Path(by_file).expanduser().resolve()
-    by_dir = os.environ.get(DEFAULT_CONFIG_DIR_ENV)
-    if by_dir:
-        return (Path(by_dir).expanduser() / DEFAULT_CONFIG_FILENAME).resolve()
+    by_env = os.environ.get(ACTIVE_CONFIG_ENV)
+    if by_env:
+        path = Path(by_env).expanduser().resolve()
+        # Keep env-based selection and persisted active path aligned.
+        current = get_active_config_path()
+        if current != path:
+            try:
+                set_active_config_path(path)
+            except OSError:
+                pass
+        return path
     active = get_active_config_path()
     if active is not None:
         return active
@@ -110,9 +113,6 @@ def default_config_path() -> Path:
 def config_target_path(explicit: Optional[str]) -> Path:
     if explicit:
         return Path(explicit).expanduser().resolve()
-    by_env = os.environ.get("PIGEON_CONFIG")
-    if by_env:
-        return Path(by_env).expanduser().resolve()
     return default_config_path()
 
 

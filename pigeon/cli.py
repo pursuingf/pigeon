@@ -10,7 +10,6 @@ from .config import (
     config_target_path,
     config_to_toml,
     configurable_keys,
-    default_config_path,
     ensure_file_config,
     refresh_file_config,
     set_active_config_path,
@@ -21,13 +20,8 @@ from .config import (
 from .worker import run_worker
 
 
-def _default_path_help() -> str:
-    return f"Config path (default: $PIGEON_CONFIG, else {default_config_path()})"
-
-
 def _worker_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pigeon worker", description="Run pigeon worker loop")
-    p.add_argument("--config", type=str, default=None, help=_default_path_help())
     p.add_argument("--max-jobs", type=int, default=None, help="Max concurrent session runners")
     p.add_argument("--poll-interval", type=float, default=None, help="Worker discovery poll seconds")
     p.add_argument("--route", type=str, default=None, help="Worker route key (only pick matching routed tasks)")
@@ -42,7 +36,6 @@ def _worker_parser() -> argparse.ArgumentParser:
 
 def _run_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pigeon", description="Run command on remote worker via shared cache")
-    p.add_argument("--config", type=str, default=None, help=_default_path_help())
     p.add_argument("-v", "--verbose", action="store_true", help="Print session state transitions")
     p.add_argument("--route", type=str, default=None, help="Route key for selecting worker group")
     p.add_argument(
@@ -56,14 +49,12 @@ def _run_parser() -> argparse.ArgumentParser:
 
 def _config_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="pigeon config", description="View and edit pigeon config")
-    p.add_argument("--config", type=str, default=None, help=_default_path_help())
     sub = p.add_subparsers(dest="action", required=True)
 
     sub.add_parser("init", help="Create config file with defaults if missing")
     sub.add_parser("refresh", help="Fill missing default keys and rewrite config file")
-    usep = sub.add_parser("use", help="Set active global config path")
-    usep.add_argument("path", type=str, help="Config file path to activate")
-    sub.add_parser("path", help="Print resolved config path")
+    pathp = sub.add_parser("path", help="Print or set active config path")
+    pathp.add_argument("path", nargs="?", type=str, help="Set active config path")
     keys = sub.add_parser("keys", help="List configurable keys")
     keys.add_argument("--short", action="store_true", help="Only print key names")
 
@@ -112,17 +103,6 @@ def _split_client_args(args: Sequence[str]) -> Tuple[List[str], List[str]]:
             known.append(tok)
             i += 1
             continue
-        if tok == "--config":
-            if i + 1 >= len(args):
-                known.append(tok)
-                return known, []
-            known.extend([tok, args[i + 1]])
-            i += 2
-            continue
-        if tok.startswith("--config="):
-            known.append(tok)
-            i += 1
-            continue
         return known, list(args[i:])
     return known, []
 
@@ -161,10 +141,17 @@ def _print_effective(file_cfg) -> None:
 
 def _run_config(parsed_args: argparse.Namespace) -> int:
     try:
-        target = config_target_path(parsed_args.config)
+        target = config_target_path(None)
         action = parsed_args.action
 
         if action == "path":
+            if parsed_args.path:
+                cfg, created, changed = refresh_file_config(parsed_args.path)
+                active = set_active_config_path(cfg.path)
+                print(f"path={active}")
+                print(f"created={'yes' if created else 'no'}")
+                print(f"refreshed={'yes' if changed else 'no'}")
+                return 0
             print(target)
             return 0
 
@@ -179,29 +166,20 @@ def _run_config(parsed_args: argparse.Namespace) -> int:
             return 0
 
         if action == "init":
-            _, created = ensure_file_config(parsed_args.config)
+            _, created = ensure_file_config(None)
             print(f"path={target}")
             print(f"created={'yes' if created else 'no'}")
             return 0
 
         if action == "refresh":
-            cfg, created, changed = refresh_file_config(parsed_args.config)
+            cfg, created, changed = refresh_file_config(None)
             print(f"path={cfg.path}")
             print(f"created={'yes' if created else 'no'}")
             print(f"refreshed={'yes' if changed else 'no'}")
-            return 0
-
-        if action == "use":
-            cfg, created, changed = refresh_file_config(parsed_args.path)
-            active = set_active_config_path(cfg.path)
-            print(f"path={cfg.path}")
-            print(f"created={'yes' if created else 'no'}")
-            print(f"refreshed={'yes' if changed else 'no'}")
-            print(f"active={active}")
             return 0
 
         if action == "show":
-            cfg, created = ensure_file_config(parsed_args.config)
+            cfg, created = ensure_file_config(None)
             print(f"path={target}")
             print("exists=yes")
             print(f"created_now={'yes' if created else 'no'}")
@@ -217,17 +195,17 @@ def _run_config(parsed_args: argparse.Namespace) -> int:
                 _print_effective(cfg)
             return 0
 
-        cfg, _ = ensure_file_config(parsed_args.config)
+        cfg, _ = ensure_file_config(None)
 
         if action == "set":
             updated = set_config_value(cfg, parsed_args.key, parsed_args.value)
-            written = write_file_config(updated, parsed_args.config)
+            written = write_file_config(updated, None)
             print(f"updated {written}: {parsed_args.key}")
             return 0
 
         if action == "unset":
             updated = unset_config_value(cfg, parsed_args.key)
-            written = write_file_config(updated, parsed_args.config)
+            written = write_file_config(updated, None)
             print(f"updated {written}: {parsed_args.key} unset")
             return 0
 
@@ -240,18 +218,18 @@ def _run_config(parsed_args: argparse.Namespace) -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and (args[0] == "--config" or args[0].startswith("--config=")):
+        print("pigeon: '--config' has been removed; use 'pigeon config path <FILE>'", file=sys.stderr)
+        return 2
     if not args or args[0] in {"-h", "--help"}:
-        print("usage: pigeon [--config FILE] [--route ROUTE] [--wait-worker S] [-v] <cmd...>")
-        print("       pigeon --config FILE   # refresh and activate config file")
-        print("       pigeon worker [--config FILE] [--max-jobs N] [--poll-interval S] [--debug|--no-debug]")
-        print("       pigeon config [--config FILE] {init|refresh|use|path|show|set|unset|keys} ...")
+        print("usage: pigeon [--route ROUTE] [--wait-worker S] [-v] <cmd...>")
+        print("       pigeon worker [--max-jobs N] [--poll-interval S] [--debug|--no-debug]")
+        print("       pigeon config {init|refresh|path|show|set|unset|keys} ...")
         print("")
-        print("cache/namespace config sources (priority high -> low):")
-        print("  --config > PIGEON_CONFIG > default config path > env PIGEON_* overrides")
+        print("config path source (unified):")
+        print("  pigeon config path <FILE>  <=>  PIGEON_CONFIG=<FILE>")
         print("optional env:")
         print("  PIGEON_CONFIG=/path/to/pigeon.toml")
-        print(f"  PIGEON_DEFAULT_CONFIG=/path/to/pigeon.toml (default file override)")
-        print(f"  PIGEON_CONFIG_DIR=/shared/pigeon-config (default path: {default_config_path()})")
         print("  PIGEON_CACHE=/path/to/shared/cache")
         print("  PIGEON_NAMESPACE=<namespace> (default: $USER)")
         print("  PIGEON_USER=<requester user>")
@@ -270,18 +248,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     run_parser = _run_parser()
     known_args, command = _split_client_args(args)
+    if command and (command[0] == "--config" or command[0].startswith("--config=")):
+        print("pigeon: '--config' has been removed; use 'pigeon config path <FILE>'", file=sys.stderr)
+        return 2
     known = run_parser.parse_args(known_args)
     if not command:
-        if known.config is None:
-            print("usage: pigeon [--config FILE] [--route ROUTE] [--wait-worker S] [-v] <cmd...>", file=sys.stderr)
-            return 2
-        cfg, created, changed = refresh_file_config(known.config)
-        active = set_active_config_path(cfg.path)
-        print(f"path={cfg.path}")
-        print(f"created={'yes' if created else 'no'}")
-        print(f"refreshed={'yes' if changed else 'no'}")
-        print(f"active={active}")
-        return 0
+        print("usage: pigeon [--route ROUTE] [--wait-worker S] [-v] <cmd...>", file=sys.stderr)
+        return 2
     return run_command(command=command, parsed_args=known)
 
 

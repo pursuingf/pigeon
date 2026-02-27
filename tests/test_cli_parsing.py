@@ -13,14 +13,14 @@ from pigeon.cli import _split_client_args, main
 
 class CliParsingTests(unittest.TestCase):
     def test_split_client_args_stops_at_first_command_token(self) -> None:
-        known, command = _split_client_args(["--config", "a.toml", "-v", "codex", "--config", "x"])
-        self.assertEqual(known, ["--config", "a.toml", "-v"])
-        self.assertEqual(command, ["codex", "--config", "x"])
+        known, command = _split_client_args(["-v", "codex", "--route", "x"])
+        self.assertEqual(known, ["-v"])
+        self.assertEqual(command, ["codex", "--route", "x"])
 
     def test_split_client_args_supports_double_dash_separator(self) -> None:
-        known, command = _split_client_args(["-v", "--", "--config", "x"])
+        known, command = _split_client_args(["-v", "--", "--route", "x"])
         self.assertEqual(known, ["-v"])
-        self.assertEqual(command, ["--config", "x"])
+        self.assertEqual(command, ["--route", "x"])
 
     def test_split_client_args_without_client_flags(self) -> None:
         known, command = _split_client_args(["echo", "hello"])
@@ -44,7 +44,7 @@ class CliParsingTests(unittest.TestCase):
             with mock.patch.dict(os.environ, env, clear=True):
                 buf = StringIO()
                 with redirect_stdout(buf):
-                    rc = main(["--config", str(cfg)])
+                    rc = main(["config", "path", str(cfg)])
                 path_buf = StringIO()
                 with redirect_stdout(path_buf):
                     rc_path = main(["config", "path"])
@@ -55,6 +55,14 @@ class CliParsingTests(unittest.TestCase):
             self.assertIn('cache = "/tmp/pigeon-cache"', body)
             self.assertIn('namespace = "cli-test-user"', body)
             self.assertEqual(path_buf.getvalue().strip(), str(cfg.resolve()))
+
+    def test_main_rejects_removed_config_flag(self) -> None:
+        err = StringIO()
+        with redirect_stdout(StringIO()):
+            with mock.patch("sys.stderr", err):
+                rc = main(["--config", "/tmp/x.toml"])
+        self.assertEqual(rc, 2)
+        self.assertIn("--config", err.getvalue())
 
 
 if __name__ == "__main__":

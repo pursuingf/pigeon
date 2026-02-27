@@ -27,16 +27,10 @@ from pigeon.config import (
 class ConfigTests(unittest.TestCase):
     def test_default_config_path_can_be_overridden_by_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            p = Path(tmp) / "default.toml"
-            with mock.patch.dict(os.environ, {"PIGEON_DEFAULT_CONFIG": str(p)}, clear=True):
+            p = Path(tmp) / "env.toml"
+            with mock.patch.dict(os.environ, {"HOME": tmp, "PIGEON_CONFIG": str(p)}, clear=True):
                 got = default_config_path()
         self.assertEqual(got, p.resolve())
-
-    def test_default_config_path_can_use_config_dir_env(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.dict(os.environ, {"PIGEON_CONFIG_DIR": tmp}, clear=True):
-                got = default_config_path()
-        self.assertEqual(got, (Path(tmp) / "config.toml").resolve())
 
     def test_default_config_path_can_use_active_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -62,7 +56,7 @@ class ConfigTests(unittest.TestCase):
                 set_active_config_path(active_target)
             with mock.patch.dict(
                 os.environ,
-                {"HOME": tmp, "PIGEON_DEFAULT_CONFIG": str(explicit_target)},
+                {"HOME": tmp, "PIGEON_CONFIG": str(explicit_target)},
                 clear=True,
             ):
                 got = default_config_path()
@@ -72,43 +66,39 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             explicit = Path(tmp) / "explicit.toml"
             by_env = Path(tmp) / "env.toml"
-            by_default = Path(tmp) / "default.toml"
-            by_dir = Path(tmp) / "cfg-dir"
+            by_active = Path(tmp) / "active.toml"
+            by_default = Path(tmp) / ".config" / "pigeon" / "config.toml"
+            by_default.parent.mkdir(parents=True, exist_ok=True)
             with mock.patch.dict(
                 os.environ,
-                {
-                    "PIGEON_CONFIG": str(by_env),
-                    "PIGEON_DEFAULT_CONFIG": str(by_default),
-                    "PIGEON_CONFIG_DIR": str(by_dir),
-                },
+                {"HOME": tmp, "PIGEON_CONFIG": str(by_env)},
                 clear=True,
             ):
                 self.assertEqual(config_target_path(str(explicit)), explicit.resolve())
                 self.assertEqual(config_target_path(None), by_env.resolve())
 
-            with mock.patch.dict(
-                os.environ,
-                {"PIGEON_DEFAULT_CONFIG": str(by_default), "PIGEON_CONFIG_DIR": str(by_dir)},
-                clear=True,
-            ):
-                self.assertEqual(config_target_path(None), by_default.resolve())
+            with mock.patch.dict(os.environ, {"HOME": tmp}, clear=True):
+                set_active_config_path(by_active)
+                self.assertEqual(config_target_path(None), by_active.resolve())
 
-            with mock.patch.dict(os.environ, {"PIGEON_CONFIG_DIR": str(by_dir)}, clear=True):
-                self.assertEqual(config_target_path(None), (by_dir / "config.toml").resolve())
+            with mock.patch.dict(os.environ, {"HOME": tmp}, clear=True):
+                pointer = active_config_pointer_path()
+                if pointer.exists():
+                    pointer.unlink()
+                self.assertEqual(config_target_path(None), by_default.resolve())
 
     def test_discover_returns_none_if_target_does_not_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp) / "default.toml"
-            with mock.patch.dict(os.environ, {"PIGEON_DEFAULT_CONFIG": str(p)}, clear=True):
+            with mock.patch.dict(os.environ, {"PIGEON_CONFIG": str(p)}, clear=True):
                 found = discover_config_path(None)
         self.assertIsNone(found)
 
     def test_discover_ignores_cwd_local_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            default_cfg = Path(tmp) / "global.toml"
             local_cfg = Path(tmp) / ".pigeon.toml"
             local_cfg.write_text('cache = "/tmp/local-cwd"\n', encoding="utf-8")
-            with mock.patch.dict(os.environ, {"PIGEON_DEFAULT_CONFIG": str(default_cfg)}, clear=True):
+            with mock.patch.dict(os.environ, {"HOME": tmp}, clear=True):
                 found = discover_config_path(None)
         self.assertIsNone(found)
 

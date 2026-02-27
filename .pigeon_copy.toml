@@ -1,0 +1,17 @@
+# Default pigeon config.
+# Priority: --config > PIGEON_CONFIG > this file.
+
+cache = "/tmp/pigeon-cache"
+namespace = "demo"
+route = "cpu-pool-a"
+user = "pgroup"
+
+[worker]
+max_jobs = 16
+poll_interval = 5
+debug = true
+route = "cpu-pool-a"
+
+[remote_env]
+# Example:
+HTTPS_PROXY="http://proxy.example:8080"

@@ -42,13 +42,17 @@ pigeon --help
 ## 3. 写入全局配置（一次）
 
 默认配置文件路径：`~/.config/pigeon/config.toml`
-如果要跨 `gpu_m/cpu_m` 共享同一份配置，先设置：
+如果要跨 `gpu_m/cpu_m` 共享同一份配置，直接设置“当前配置文件路径”：
 
 ```bash
-export PIGEON_CONFIG_DIR=/data/shared/pigeon-config
+pigeon config path /data/shared/pigeon-config/config.toml
 ```
 
-设置后默认配置文件会变成：`/data/shared/pigeon-config/config.toml`
+如果你习惯用环境变量，`PIGEON_CONFIG` 和上面的命令是同一个语义：
+
+```bash
+export PIGEON_CONFIG=/data/shared/pigeon-config/config.toml
+```
 
 首次初始化（如果文件不存在会创建并写入默认值）：
 
@@ -60,10 +64,16 @@ pigeon config init
 你也可以直接刷新并补齐配置缺失项：
 
 ```bash
-pigeon --config /home/pgroup/pxd-team/workspace/fyh/pigeon/.pigeon.toml
+pigeon config refresh
 ```
 
-这条命令会同时把该文件设为“当前全局配置路径”（后续不带 `--config` 的命令都会用它）。
+把当前配置路径切换到另一个文件：
+
+```bash
+pigeon config path /home/pgroup/pxd-team/workspace/fyh/pigeon/.pigeon.toml
+```
+
+说明：`--config` 参数已移除，统一改为 `pigeon config path <FILE>`。
 
 查看当前生效路径：
 
@@ -174,16 +184,13 @@ echo $?
 
 `echo $?` 会输出 `7`。
 
-## 7. 配置优先级（明确规则）
+## 7. 配置路径规则
 
-配置文件路径优先级：
+配置文件路径只有一个“当前值”：
 
-1. `--config /path/to/file.toml`
-2. `PIGEON_CONFIG=/path/to/file.toml`
-3. `PIGEON_DEFAULT_CONFIG=/path/to/default.toml`
-4. `PIGEON_CONFIG_DIR=/path/to/dir`（实际文件是 `/path/to/dir/config.toml`）
-5. `~/.config/pigeon/active_config_path` 指向的路径（由 `pigeon --config FILE` 或 `pigeon config use FILE` 设置）
-6. 默认 `~/.config/pigeon/config.toml`
+1. `pigeon config path /path/to/file.toml` 会设置并持久化当前路径。
+2. `PIGEON_CONFIG=/path/to/file.toml` 也表示当前路径（进程内生效，并会同步到持久化路径）。
+3. 若两者都没设置过，默认 `~/.config/pigeon/config.toml`。
 
 业务参数优先级：
 
@@ -277,12 +284,13 @@ pigeon worker --debug
 pigeon --wait-worker 0.5 true
 ```
 
-如果你需要使用非默认配置文件，所有命令都可加 `--config`：
+如果你需要临时使用另一份配置文件，先切换路径再执行命令：
 
 ```bash
-pigeon config --config /tmp/pigeon.toml show --effective
-pigeon worker --config /tmp/pigeon.toml --route cpu-pool-a
-pigeon --config /tmp/pigeon.toml curl -I https://example.com
+pigeon config path /tmp/pigeon.toml
+pigeon config show --effective
+pigeon worker --route cpu-pool-a
+pigeon curl -I https://example.com
 ```
 
 ## 11. 会话目录结构
