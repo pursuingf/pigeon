@@ -14,6 +14,7 @@ from pigeon.config import (
     discover_config_path,
     ensure_file_config,
     load_file_config,
+    refresh_file_config,
     set_config_value,
     unset_config_value,
     write_file_config,
@@ -203,6 +204,23 @@ class ConfigTests(unittest.TestCase):
         self.assertFalse(created)
         self.assertEqual(loaded.cache, "/from/file")
         self.assertEqual(loaded.namespace, "ns-file")
+
+    def test_refresh_file_config_fills_missing_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "cfg.toml"
+            target.write_text('cache = "/from-file"\n', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"USER": "refresh-user"}, clear=True):
+                refreshed, created, changed = refresh_file_config(str(target))
+            loaded = load_file_config(str(target))
+        self.assertFalse(created)
+        self.assertTrue(changed)
+        self.assertEqual(refreshed.path, target.resolve())
+        self.assertEqual(loaded.cache, "/from-file")
+        self.assertEqual(loaded.namespace, "refresh-user")
+        self.assertEqual(loaded.user, "refresh-user")
+        self.assertEqual(loaded.worker_max_jobs, 4)
+        self.assertAlmostEqual(loaded.worker_poll_interval or 0.0, 0.2, places=6)
+        self.assertFalse(loaded.worker_debug)
 
 
 if __name__ == "__main__":

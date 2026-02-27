@@ -5,17 +5,21 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import socket
 import tempfile
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 from .config import FileConfig
 
 DEFAULT_POLL_INTERVAL = 0.05
+WORKER_HEARTBEAT_STALE_SECONDS = 3.0
+WORKER_HEARTBEAT_INTERVAL_SECONDS = 1.0
+_WORKER_ID_SAFE_RE = re.compile(r"[^A-Za-z0-9_.-]")
 
 
 @dataclass(frozen=True)
@@ -51,9 +55,14 @@ class PigeonConfig:
     def locks_dir(self) -> Path:
         return self.ns_root / "locks"
 
+    @property
+    def workers_dir(self) -> Path:
+        return self.ns_root / "workers"
+
     def ensure_dirs(self) -> None:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.locks_dir.mkdir(parents=True, exist_ok=True)
+        self.workers_dir.mkdir(parents=True, exist_ok=True)
 
 
 def now_ts() -> float:
@@ -72,6 +81,21 @@ def new_session_id() -> str:
 
 def host_name() -> str:
     return socket.gethostname()
+
+
+def normalize_route(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    route = value.strip()
+    return route or None
+
+
+def route_matches(worker_route: Optional[str], req_route: Optional[str]) -> bool:
+    if req_route is None:
+        return worker_route is None
+    return worker_route == req_route
 
 
 def session_dir(config: PigeonConfig, session_id: str) -> Path:
@@ -101,6 +125,76 @@ def control_path(config: PigeonConfig, session_id: str) -> Path:
 def claim_path(config: PigeonConfig, session_id: str) -> Path:
     return session_dir(config, session_id) / "worker.claim"
 
+
+def worker_heartbeat_path(config: PigeonConfig, worker_id: str) -> Path:
+    safe = _WORKER_ID_SAFE_RE.sub("_", worker_id)
+    return config.workers_dir / f"{safe}.json"
+
+
+def write_worker_heartbeat(
+    config: PigeonConfig,
+    worker_id: str,
+    *,
+    route: Optional[str],
+    host: str,
+    pid: int,
+    started_at: str,
+    now: Optional[float] = None,
+) -> Path:
+    ts = now_ts() if now is None else float(now)
+    payload = {
+        "worker_id": worker_id,
+        "host": host,
+        "pid": int(pid),
+        "route": normalize_route(route),
+        "started_at": started_at,
+        "updated_at": utc_iso(ts),
+        "updated_ts": ts,
+    }
+    path = worker_heartbeat_path(config, worker_id)
+    atomic_write_json(path, payload)
+    return path
+
+
+def remove_worker_heartbeat(config: PigeonConfig, worker_id: str) -> None:
+    path = worker_heartbeat_path(config, worker_id)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
+def discover_active_workers(
+    config: PigeonConfig,
+    req_route: Optional[str],
+    *,
+    now: Optional[float] = None,
+    stale_after: float = WORKER_HEARTBEAT_STALE_SECONDS,
+) -> List[Dict[str, Any]]:
+    if stale_after <= 0:
+        stale_after = WORKER_HEARTBEAT_STALE_SECONDS
+    base_now = now_ts() if now is None else float(now)
+    out: List[Dict[str, Any]] = []
+    if not config.workers_dir.exists():
+        return out
+    route = normalize_route(req_route)
+    for entry in sorted(config.workers_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        try:
+            rec = read_json(entry)
+        except Exception:
+            continue
+        worker_route = normalize_route(rec.get("route"))
+        if not route_matches(worker_route, route):
+            continue
+        raw_ts = rec.get("updated_ts")
+        if not isinstance(raw_ts, (int, float)):
+            continue
+        if base_now - float(raw_ts) > stale_after:
+            continue
+        out.append(rec)
+    return out
 
 def cwd_lock_path(config: PigeonConfig, cwd: str) -> Path:
     digest = hashlib.sha256(cwd.encode("utf-8")).hexdigest()

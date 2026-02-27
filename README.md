@@ -50,6 +50,11 @@ pigeon config init
 ```
 
 不手动执行 `config init` 也可以：首次运行 `pigeon worker ...` 或 `pigeon <cmd...>` 时，也会自动创建同一份配置文件。
+你也可以直接刷新并补齐配置缺失项：
+
+```bash
+pigeon --config /home/pgroup/pxd-team/workspace/fyh/pigeon/.pigeon.toml
+```
 
 查看当前生效路径：
 
@@ -91,6 +96,7 @@ pigeon config set remote_env.HTTP_PROXY http://proxy.example:8080
 
 ```bash
 pigeon config show --effective
+pigeon config refresh
 ```
 
 ## 4. 在 cpu_m 启动 worker
@@ -134,6 +140,13 @@ pigeon 'read -p "name? " n; echo "hello $n"'
 
 ```bash
 pigeon --route cpu-pool-b curl -I https://example.com
+```
+
+`pigeon` 在发起请求前会先检查是否有匹配 route 的活跃 worker。默认最多等待 3 秒，超时直接报错并退出（不会无限卡住）。
+你可以按命令覆盖等待时间：
+
+```bash
+pigeon --wait-worker 0.5 curl -I https://example.com
 ```
 
 ## 6. 退出码对齐验证
@@ -244,6 +257,12 @@ pigeon config unset remote_env.HTTPS_PROXY
 pigeon worker --debug
 ```
 
+只检查是否有可用 worker（不执行命令）：
+
+```bash
+pigeon --wait-worker 0.5 true
+```
+
 如果你需要使用非默认配置文件，所有命令都可加 `--config`：
 
 ```bash
@@ -264,6 +283,9 @@ pigeon --config /tmp/pigeon.toml curl -I https://example.com
   stdin.jsonl
   control.jsonl
   worker.claim
+
+<cache>/namespaces/<namespace>/workers/<worker_host>-<worker_pid>.json
+  # worker heartbeat (用于客户端判断是否有可用 worker)
 ```
 
 同一 `cwd` 会使用锁文件串行执行：

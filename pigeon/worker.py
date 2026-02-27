@@ -16,6 +16,7 @@ from typing import Dict, List, Tuple
 
 from .common import (
     DEFAULT_POLL_INTERVAL,
+    WORKER_HEARTBEAT_INTERVAL_SECONDS,
     FileLock,
     PigeonConfig,
     append_jsonl,
@@ -26,30 +27,28 @@ from .common import (
     decode_bytes,
     encode_bytes,
     host_name,
+    normalize_route,
+    now_ts,
     read_json,
+    remove_worker_heartbeat,
     request_path,
+    route_matches,
     status_path,
     stdin_path,
     stream_path,
     tail_jsonl,
     utc_iso,
+    write_worker_heartbeat,
 )
 from .config import ensure_file_config
 
 
 def _normalize_route(value: object) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        return None
-    val = value.strip()
-    return val or None
+    return normalize_route(value)
 
 
 def _route_matches(worker_route: str | None, req_route: str | None) -> bool:
-    if req_route is None:
-        return worker_route is None
-    return worker_route == req_route
+    return route_matches(worker_route, req_route)
 
 
 def _downgrade_interactive_shell_flag(command: List[str]) -> List[str]:
@@ -547,6 +546,28 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
         or file_config.worker_route
         or file_config.route
     )
+    worker_host = host_name()
+    worker_pid = os.getpid()
+    worker_id = f"{worker_host}-{worker_pid}"
+    worker_started_at = utc_iso()
+    next_heartbeat = 0.0
+
+    def _heartbeat(force: bool = False) -> None:
+        nonlocal next_heartbeat
+        now = now_ts()
+        if not force and now < next_heartbeat:
+            return
+        write_worker_heartbeat(
+            config,
+            worker_id,
+            route=worker_route,
+            host=worker_host,
+            pid=worker_pid,
+            started_at=worker_started_at,
+            now=now,
+        )
+        next_heartbeat = now + max(WORKER_HEARTBEAT_INTERVAL_SECONDS, poll_interval)
+
     stop = threading.Event()
 
     def _stop(signum, frame) -> None:
@@ -559,6 +580,7 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
 
     futures: Dict[concurrent.futures.Future, str] = {}
     try:
+        _heartbeat(force=True)
         _debug_log(
             debug,
             f"worker start host={host_name()} pid={os.getpid()} namespace={config.namespace} cache={config.cache_root} route={worker_route or '-'}",
@@ -566,6 +588,7 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
         )
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_jobs) as pool:
             while not stop.is_set():
+                _heartbeat()
                 done = [f for f in futures if f.done()]
                 for f in done:
                     sid = futures.pop(f, None)
@@ -597,6 +620,7 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
 
                 time.sleep(max(poll_interval, 0.01))
     finally:
+        remove_worker_heartbeat(config, worker_id)
         _debug_log(debug, "worker stop", kind="lifecycle")
         signal.signal(signal.SIGINT, old_int)
         signal.signal(signal.SIGTERM, old_term)

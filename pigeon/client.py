@@ -19,9 +19,11 @@ from .common import (
     atomic_write_json,
     control_path,
     decode_bytes,
+    discover_active_workers,
     encode_bytes,
     host_name,
     new_session_id,
+    now_ts,
     read_json,
     request_path,
     session_dir,
@@ -32,6 +34,8 @@ from .common import (
     utc_iso,
 )
 from .config import FileConfig, ensure_file_config
+
+DEFAULT_WORKER_WAIT_SECONDS = 3.0
 
 
 def _read_terminal_size() -> Optional[Dict[str, int]]:
@@ -58,6 +62,32 @@ def _resolve_request_route(parsed_args: argparse.Namespace, file_config: FileCon
         return None
     route = str(route).strip()
     return route or None
+
+
+def _resolve_worker_wait_timeout(parsed_args: argparse.Namespace) -> float:
+    raw: object = getattr(parsed_args, "wait_worker", None)
+    if raw is None:
+        env_val = os.environ.get("PIGEON_WAIT_WORKER")
+        raw = DEFAULT_WORKER_WAIT_SECONDS if env_val is None else env_val
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        timeout = DEFAULT_WORKER_WAIT_SECONDS
+    if timeout < 0:
+        return 0.0
+    return timeout
+
+
+def _wait_for_worker(config: PigeonConfig, route: Optional[str], timeout: float) -> List[Dict[str, object]]:
+    deadline = now_ts() + max(timeout, 0.0)
+    while True:
+        workers = discover_active_workers(config, route)
+        if workers:
+            return workers
+        if now_ts() >= deadline:
+            return []
+        remaining = max(0.0, deadline - now_ts())
+        time.sleep(min(DEFAULT_POLL_INTERVAL, max(0.01, remaining)))
 
 
 def _build_request(
@@ -251,6 +281,23 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
         print(f"[pigeon] initialized config: {file_config.path}", file=sys.stderr)
     config = PigeonConfig.from_sources(file_config)
     config.ensure_dirs()
+    req_route = _resolve_request_route(parsed_args, file_config)
+    wait_timeout = _resolve_worker_wait_timeout(parsed_args)
+    active_workers = _wait_for_worker(config, req_route, wait_timeout)
+    if not active_workers:
+        route_label = req_route or "-"
+        print(
+            (
+                f"[pigeon] no active worker found within {wait_timeout:.1f}s "
+                f"(namespace={config.namespace} route={route_label} cache={config.cache_root})"
+            ),
+            file=sys.stderr,
+        )
+        if req_route:
+            print(f"[pigeon] start worker: pigeon worker --route {req_route}", file=sys.stderr)
+        else:
+            print("[pigeon] start worker: pigeon worker", file=sys.stderr)
+        return 4
 
     cwd = str(Path.cwd().resolve())
     session_id = new_session_id()
@@ -263,7 +310,7 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
         cwd=cwd,
         session_id=session_id,
         file_config=file_config,
-        route=_resolve_request_route(parsed_args, file_config),
+        route=req_route,
     )
     atomic_write_json(request_path(config, session_id), request)
     atomic_write_json(
@@ -327,6 +374,7 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
     stream_offset = 0
     last_state = "pending"
     exit_code = 1
+    pending_deadline = now_ts() + max(wait_timeout, 0.0)
     try:
         while True:
             stream_offset, records = tail_jsonl(stream_path(config, session_id), stream_offset)
@@ -356,6 +404,21 @@ def run_command(command: List[str], parsed_args: argparse.Namespace) -> int:
             if state != last_state and parsed_args.verbose:
                 print(f"\n[pigeon] session={session_id} state={state}", file=sys.stderr)
                 last_state = state
+
+            if state == "pending":
+                workers = discover_active_workers(config, req_route)
+                if workers:
+                    pending_deadline = now_ts() + max(wait_timeout, 0.0)
+                elif now_ts() >= pending_deadline:
+                    route_label = req_route or "-"
+                    print(
+                        (
+                            f"\n[pigeon] session={session_id} is still pending and no active worker "
+                            f"(namespace={config.namespace} route={route_label})"
+                        ),
+                        file=sys.stderr,
+                    )
+                    return 4
 
             if state in {"succeeded", "failed", "cancelled"}:
                 for _ in range(3):

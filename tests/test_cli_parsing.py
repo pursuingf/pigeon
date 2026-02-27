@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from unittest import mock
 
-from pigeon.cli import _split_client_args
+from pigeon.cli import _split_client_args, main
 
 
 class CliParsingTests(unittest.TestCase):
@@ -25,6 +31,24 @@ class CliParsingTests(unittest.TestCase):
         known, command = _split_client_args(["--route", "cpu-a", "echo", "ok"])
         self.assertEqual(known, ["--route", "cpu-a"])
         self.assertEqual(command, ["echo", "ok"])
+
+    def test_split_client_args_parses_wait_worker(self) -> None:
+        known, command = _split_client_args(["--wait-worker", "1.5", "echo", "ok"])
+        self.assertEqual(known, ["--wait-worker", "1.5"])
+        self.assertEqual(command, ["echo", "ok"])
+
+    def test_main_config_only_refreshes_target_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "cfg.toml"
+            with mock.patch.dict(os.environ, {"USER": "cli-test-user"}, clear=True):
+                buf = StringIO()
+                with redirect_stdout(buf):
+                    rc = main(["--config", str(cfg)])
+            self.assertEqual(rc, 0)
+            self.assertTrue(cfg.exists())
+            body = cfg.read_text(encoding="utf-8")
+            self.assertIn('cache = "/tmp/pigeon-cache"', body)
+            self.assertIn('namespace = "cli-test-user"', body)
 
 
 if __name__ == "__main__":

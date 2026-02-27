@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import argparse
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from pigeon.client import _build_request, _normalize_exec_command
+from pigeon.client import _build_request, _normalize_exec_command, _resolve_worker_wait_timeout, _wait_for_worker
+from pigeon.common import PigeonConfig, now_ts, write_worker_heartbeat
 from pigeon.config import FileConfig
 
 
@@ -100,6 +104,38 @@ class ClientCommandModeTests(unittest.TestCase):
         wrapped = _normalize_exec_command(["echo", "x"], self._cfg(), shell_flag="-lc")
         self.assertEqual(wrapped[0:2], ["bash", "-lc"])
         self.assertEqual(wrapped[2], "echo x")
+
+    def test_wait_worker_timeout_default(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            timeout = _resolve_worker_wait_timeout(argparse.Namespace(wait_worker=None))
+        self.assertAlmostEqual(timeout, 3.0, places=6)
+
+    def test_wait_for_worker_returns_empty_when_none(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = PigeonConfig(cache_root=Path(tmp), namespace="ns")
+            cfg.ensure_dirs()
+            workers = _wait_for_worker(cfg, route=None, timeout=0.0)
+        self.assertEqual(workers, [])
+
+    def test_wait_for_worker_filters_by_route(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = PigeonConfig(cache_root=Path(tmp), namespace="ns")
+            cfg.ensure_dirs()
+            now = now_ts()
+            write_worker_heartbeat(
+                cfg,
+                "worker-a",
+                route="cpu-a",
+                host="h",
+                pid=1,
+                started_at="2026-01-01T00:00:00.000000Z",
+                now=now,
+            )
+            workers = _wait_for_worker(cfg, route="cpu-a", timeout=0.0)
+            missing = _wait_for_worker(cfg, route="cpu-b", timeout=0.0)
+        self.assertEqual(len(workers), 1)
+        self.assertEqual(workers[0].get("worker_id"), "worker-a")
+        self.assertEqual(missing, [])
 
 
 if __name__ == "__main__":

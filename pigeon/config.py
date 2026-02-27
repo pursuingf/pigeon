@@ -227,6 +227,36 @@ def ensure_file_config(explicit: Optional[str]) -> Tuple[FileConfig, bool]:
     return replace(boot, path=written), True
 
 
+def _fill_missing_defaults(cfg: FileConfig, explicit: Optional[str]) -> FileConfig:
+    target = cfg.path or config_target_path(explicit)
+    base = _bootstrap_file_config(target)
+    return replace(
+        cfg,
+        path=target,
+        cache=cfg.cache if cfg.cache is not None else base.cache,
+        namespace=cfg.namespace if cfg.namespace is not None else base.namespace,
+        route=cfg.route if cfg.route is not None else base.route,
+        user=cfg.user if cfg.user is not None else base.user,
+        worker_max_jobs=cfg.worker_max_jobs if cfg.worker_max_jobs is not None else base.worker_max_jobs,
+        worker_poll_interval=(
+            cfg.worker_poll_interval if cfg.worker_poll_interval is not None else base.worker_poll_interval
+        ),
+        worker_debug=cfg.worker_debug if cfg.worker_debug is not None else base.worker_debug,
+        worker_route=cfg.worker_route if cfg.worker_route is not None else base.worker_route,
+        remote_env=dict(cfg.remote_env),
+    )
+
+
+def refresh_file_config(explicit: Optional[str]) -> Tuple[FileConfig, bool, bool]:
+    cfg, created = ensure_file_config(explicit)
+    refreshed = _fill_missing_defaults(cfg, explicit)
+    changed = config_to_toml(cfg) != config_to_toml(refreshed)
+    if created or changed:
+        written = write_file_config(refreshed, explicit)
+        refreshed = replace(refreshed, path=written)
+    return refreshed, created, changed
+
+
 def _parse_bool_literal(raw: str, key: str) -> bool:
     v = raw.strip().lower()
     if v in _BOOL_TRUE:
