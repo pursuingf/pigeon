@@ -63,6 +63,8 @@ pigeon config init
 pigeon --config /home/pgroup/pxd-team/workspace/fyh/pigeon/.pigeon.toml
 ```
 
+这条命令会同时把该文件设为“当前全局配置路径”（后续不带 `--config` 的命令都会用它）。
+
 查看当前生效路径：
 
 ```bash
@@ -119,6 +121,9 @@ pigeon worker --route cpu-pool-a --max-jobs 4 --poll-interval 0.2
 ```bash
 pigeon worker --route cpu-pool-a --max-jobs 4 --poll-interval 0.2 --debug
 ```
+
+worker 运行中会每秒自动重读一次配置文件（`route`/`worker.poll_interval`/`worker.debug`），修改共享配置后无需重启 worker。
+如果你通过命令行显式传了 `--route`、`--poll-interval` 或 `--debug`，该项以命令行为准，不会被配置文件覆盖。
 
 ## 5. 在 gpu_m 执行命令
 
@@ -177,7 +182,8 @@ echo $?
 2. `PIGEON_CONFIG=/path/to/file.toml`
 3. `PIGEON_DEFAULT_CONFIG=/path/to/default.toml`
 4. `PIGEON_CONFIG_DIR=/path/to/dir`（实际文件是 `/path/to/dir/config.toml`）
-5. 默认 `~/.config/pigeon/config.toml`
+5. `~/.config/pigeon/active_config_path` 指向的路径（由 `pigeon --config FILE` 或 `pigeon config use FILE` 设置）
+6. 默认 `~/.config/pigeon/config.toml`
 
 业务参数优先级：
 

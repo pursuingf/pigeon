@@ -40,7 +40,9 @@ from .common import (
     utc_iso,
     write_worker_heartbeat,
 )
-from .config import ensure_file_config
+from .config import FileConfig, ensure_file_config, load_file_config
+
+WORKER_CONFIG_RELOAD_INTERVAL_SECONDS = 1.0
 
 
 def _normalize_route(value: object) -> str | None:
@@ -49,6 +51,32 @@ def _normalize_route(value: object) -> str | None:
 
 def _route_matches(worker_route: str | None, req_route: str | None) -> bool:
     return route_matches(worker_route, req_route)
+
+
+def _resolve_worker_route(parsed_args: argparse.Namespace, file_config: FileConfig) -> str | None:
+    return _normalize_route(
+        getattr(parsed_args, "route", None)
+        or os.environ.get("PIGEON_WORKER_ROUTE")
+        or os.environ.get("PIGEON_ROUTE")
+        or file_config.worker_route
+        or file_config.route
+    )
+
+
+def _resolve_worker_poll_interval(parsed_args: argparse.Namespace, file_config: FileConfig) -> float:
+    if parsed_args.poll_interval is not None:
+        return float(parsed_args.poll_interval)
+    if file_config.worker_poll_interval is not None:
+        return float(file_config.worker_poll_interval)
+    return 0.2
+
+
+def _resolve_worker_debug(parsed_args: argparse.Namespace, file_config: FileConfig) -> bool:
+    if getattr(parsed_args, "debug", None) is not None:
+        return bool(parsed_args.debug)
+    if file_config.worker_debug is not None:
+        return bool(file_config.worker_debug)
+    return False
 
 
 def _downgrade_interactive_shell_flag(command: List[str]) -> List[str]:
@@ -519,6 +547,7 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
         print(f"[pigeon-worker] initialized config: {file_config.path}", file=sys.stderr)
     config = PigeonConfig.from_sources(file_config)
     config.ensure_dirs()
+    config_file_path = str(file_config.path) if file_config.path is not None else None
     if parsed_args.max_jobs is not None:
         max_jobs = max(1, int(parsed_args.max_jobs))
     elif file_config.worker_max_jobs is not None:
@@ -526,31 +555,16 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
     else:
         max_jobs = 4
 
-    if parsed_args.poll_interval is not None:
-        poll_interval = float(parsed_args.poll_interval)
-    elif file_config.worker_poll_interval is not None:
-        poll_interval = float(file_config.worker_poll_interval)
-    else:
-        poll_interval = 0.2
-
-    if getattr(parsed_args, "debug", None) is not None:
-        debug = bool(parsed_args.debug)
-    elif file_config.worker_debug is not None:
-        debug = bool(file_config.worker_debug)
-    else:
-        debug = False
-    worker_route = _normalize_route(
-        getattr(parsed_args, "route", None)
-        or os.environ.get("PIGEON_WORKER_ROUTE")
-        or os.environ.get("PIGEON_ROUTE")
-        or file_config.worker_route
-        or file_config.route
-    )
+    poll_interval = _resolve_worker_poll_interval(parsed_args, file_config)
+    debug = _resolve_worker_debug(parsed_args, file_config)
+    worker_route = _resolve_worker_route(parsed_args, file_config)
     worker_host = host_name()
     worker_pid = os.getpid()
     worker_id = f"{worker_host}-{worker_pid}"
     worker_started_at = utc_iso()
     next_heartbeat = 0.0
+    next_config_reload = 0.0
+    last_reload_error = ""
 
     def _heartbeat(force: bool = False) -> None:
         nonlocal next_heartbeat
@@ -588,6 +602,37 @@ def run_worker(parsed_args: argparse.Namespace) -> int:
         )
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_jobs) as pool:
             while not stop.is_set():
+                now = now_ts()
+                if config_file_path and now >= next_config_reload:
+                    try:
+                        fresh_cfg = load_file_config(config_file_path)
+                        new_poll = _resolve_worker_poll_interval(parsed_args, fresh_cfg)
+                        new_debug = _resolve_worker_debug(parsed_args, fresh_cfg)
+                        new_route = _resolve_worker_route(parsed_args, fresh_cfg)
+                        old_poll = poll_interval
+                        old_debug = debug
+                        old_route = worker_route
+                        poll_interval = new_poll
+                        debug = new_debug
+                        worker_route = new_route
+                        if old_poll != new_poll or old_debug != new_debug or old_route != new_route:
+                            _debug_log(
+                                old_debug or new_debug,
+                                (
+                                    f"config reloaded route={old_route or '-'}->{new_route or '-'} "
+                                    f"poll={old_poll}->{new_poll} debug={old_debug}->{new_debug}"
+                                ),
+                                kind="lifecycle",
+                            )
+                            _heartbeat(force=True)
+                        last_reload_error = ""
+                    except Exception as exc:
+                        msg = f"config reload failed: {type(exc).__name__}: {exc}"
+                        if msg != last_reload_error:
+                            print(f"[pigeon-worker] {msg}", file=sys.stderr, flush=True)
+                            last_reload_error = msg
+                    next_config_reload = now + WORKER_CONFIG_RELOAD_INTERVAL_SECONDS
+
                 _heartbeat()
                 done = [f for f in futures if f.done()]
                 for f in done:

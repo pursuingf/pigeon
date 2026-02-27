@@ -11,7 +11,15 @@ from pigeon.common import (
     route_matches,
     write_worker_heartbeat,
 )
-from pigeon.worker import _downgrade_interactive_shell_flag, _normalize_route, _route_matches
+from pigeon.config import FileConfig
+from pigeon.worker import (
+    _downgrade_interactive_shell_flag,
+    _normalize_route,
+    _resolve_worker_debug,
+    _resolve_worker_poll_interval,
+    _resolve_worker_route,
+    _route_matches,
+)
 
 
 class WorkerRoutingTests(unittest.TestCase):
@@ -91,6 +99,37 @@ class WorkerRoutingTests(unittest.TestCase):
             )
             active = discover_active_workers(cfg, None, now=now, stale_after=3.0)
         self.assertEqual(active, [])
+
+    @staticmethod
+    def _file_cfg(**kwargs) -> FileConfig:
+        base = {
+            "path": None,
+            "cache": None,
+            "namespace": None,
+            "route": None,
+            "user": None,
+            "worker_max_jobs": None,
+            "worker_poll_interval": None,
+            "worker_debug": None,
+            "worker_route": None,
+            "remote_env": {},
+        }
+        base.update(kwargs)
+        return FileConfig(**base)
+
+    def test_worker_runtime_resolution_from_file(self) -> None:
+        args = type("Args", (), {"route": None, "poll_interval": None, "debug": None})()
+        cfg = self._file_cfg(route="cpu-file", worker_route="cpu-worker", worker_poll_interval=0.3, worker_debug=True)
+        self.assertEqual(_resolve_worker_route(args, cfg), "cpu-worker")
+        self.assertAlmostEqual(_resolve_worker_poll_interval(args, cfg), 0.3, places=6)
+        self.assertTrue(_resolve_worker_debug(args, cfg))
+
+    def test_worker_runtime_resolution_cli_has_priority(self) -> None:
+        args = type("Args", (), {"route": "cpu-cli", "poll_interval": 0.6, "debug": False})()
+        cfg = self._file_cfg(route="cpu-file", worker_route="cpu-worker", worker_poll_interval=0.3, worker_debug=True)
+        self.assertEqual(_resolve_worker_route(args, cfg), "cpu-cli")
+        self.assertAlmostEqual(_resolve_worker_poll_interval(args, cfg), 0.6, places=6)
+        self.assertFalse(_resolve_worker_debug(args, cfg))
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ DEFAULT_CONFIG_PATH = Path.home() / ".config" / "pigeon" / "config.toml"
 DEFAULT_CONFIG_ENV = "PIGEON_DEFAULT_CONFIG"
 DEFAULT_CONFIG_DIR_ENV = "PIGEON_CONFIG_DIR"
 DEFAULT_CONFIG_FILENAME = "config.toml"
+ACTIVE_CONFIG_POINTER_FILENAME = "active_config_path"
 DEFAULT_BOOTSTRAP_CACHE = "/tmp/pigeon-cache"
 DEFAULT_BOOTSTRAP_WORKER_MAX_JOBS = 4
 DEFAULT_BOOTSTRAP_WORKER_POLL_INTERVAL = 0.2
@@ -54,6 +55,45 @@ def configurable_keys() -> tuple[str, ...]:
     return _CONFIG_KEYS
 
 
+def _home_default_path() -> Path:
+    return Path.home() / ".config" / "pigeon" / DEFAULT_CONFIG_FILENAME
+
+
+def active_config_pointer_path() -> Path:
+    return _home_default_path().parent / ACTIVE_CONFIG_POINTER_FILENAME
+
+
+def get_active_config_path() -> Optional[Path]:
+    pointer = active_config_pointer_path()
+    if not pointer.exists():
+        return None
+    try:
+        raw = pointer.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    return Path(raw).expanduser().resolve()
+
+
+def set_active_config_path(path: Path) -> Path:
+    pointer = active_config_pointer_path()
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    target = path.expanduser().resolve()
+    fd, tmp_name = tempfile.mkstemp(prefix=".tmp-", dir=str(pointer.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            tmp.write(str(target))
+            tmp.write("\n")
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, pointer)
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+    return target
+
+
 def default_config_path() -> Path:
     by_file = os.environ.get(DEFAULT_CONFIG_ENV)
     if by_file:
@@ -61,7 +101,10 @@ def default_config_path() -> Path:
     by_dir = os.environ.get(DEFAULT_CONFIG_DIR_ENV)
     if by_dir:
         return (Path(by_dir).expanduser() / DEFAULT_CONFIG_FILENAME).resolve()
-    return DEFAULT_CONFIG_PATH.expanduser().resolve()
+    active = get_active_config_path()
+    if active is not None:
+        return active
+    return _home_default_path().expanduser().resolve()
 
 
 def config_target_path(explicit: Optional[str]) -> Path:

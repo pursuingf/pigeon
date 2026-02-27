@@ -8,13 +8,16 @@ from unittest import mock
 
 from pigeon.common import PigeonConfig
 from pigeon.config import (
+    active_config_pointer_path,
     config_target_path,
     config_to_toml,
     default_config_path,
     discover_config_path,
     ensure_file_config,
+    get_active_config_path,
     load_file_config,
     refresh_file_config,
+    set_active_config_path,
     set_config_value,
     unset_config_value,
     write_file_config,
@@ -34,6 +37,36 @@ class ConfigTests(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PIGEON_CONFIG_DIR": tmp}, clear=True):
                 got = default_config_path()
         self.assertEqual(got, (Path(tmp) / "config.toml").resolve())
+
+    def test_default_config_path_can_use_active_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            active_target = Path(tmp) / "active.toml"
+            active_target.write_text('cache = "/tmp/x"\n', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": tmp}, clear=True):
+                written = set_active_config_path(active_target)
+                self.assertEqual(written, active_target.resolve())
+                got_active = get_active_config_path()
+                got_default = default_config_path()
+                pointer = active_config_pointer_path()
+                self.assertTrue(pointer.exists())
+        self.assertEqual(got_active, active_target.resolve())
+        self.assertEqual(got_default, active_target.resolve())
+
+    def test_default_config_env_has_priority_over_active_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            active_target = Path(tmp) / "active.toml"
+            explicit_target = Path(tmp) / "explicit.toml"
+            active_target.write_text('cache = "/tmp/a"\n', encoding="utf-8")
+            explicit_target.write_text('cache = "/tmp/b"\n', encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": tmp}, clear=True):
+                set_active_config_path(active_target)
+            with mock.patch.dict(
+                os.environ,
+                {"HOME": tmp, "PIGEON_DEFAULT_CONFIG": str(explicit_target)},
+                clear=True,
+            ):
+                got = default_config_path()
+        self.assertEqual(got, explicit_target.resolve())
 
     def test_config_target_path_priority(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

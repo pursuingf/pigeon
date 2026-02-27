@@ -13,6 +13,7 @@ from .config import (
     default_config_path,
     ensure_file_config,
     refresh_file_config,
+    set_active_config_path,
     set_config_value,
     unset_config_value,
     write_file_config,
@@ -60,6 +61,8 @@ def _config_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init", help="Create config file with defaults if missing")
     sub.add_parser("refresh", help="Fill missing default keys and rewrite config file")
+    usep = sub.add_parser("use", help="Set active global config path")
+    usep.add_argument("path", type=str, help="Config file path to activate")
     sub.add_parser("path", help="Print resolved config path")
     keys = sub.add_parser("keys", help="List configurable keys")
     keys.add_argument("--short", action="store_true", help="Only print key names")
@@ -188,6 +191,15 @@ def _run_config(parsed_args: argparse.Namespace) -> int:
             print(f"refreshed={'yes' if changed else 'no'}")
             return 0
 
+        if action == "use":
+            cfg, created, changed = refresh_file_config(parsed_args.path)
+            active = set_active_config_path(cfg.path)
+            print(f"path={cfg.path}")
+            print(f"created={'yes' if created else 'no'}")
+            print(f"refreshed={'yes' if changed else 'no'}")
+            print(f"active={active}")
+            return 0
+
         if action == "show":
             cfg, created = ensure_file_config(parsed_args.config)
             print(f"path={target}")
@@ -230,9 +242,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if not args or args[0] in {"-h", "--help"}:
         print("usage: pigeon [--config FILE] [--route ROUTE] [--wait-worker S] [-v] <cmd...>")
-        print("       pigeon --config FILE   # refresh config file")
+        print("       pigeon --config FILE   # refresh and activate config file")
         print("       pigeon worker [--config FILE] [--max-jobs N] [--poll-interval S] [--debug|--no-debug]")
-        print("       pigeon config [--config FILE] {init|refresh|path|show|set|unset|keys} ...")
+        print("       pigeon config [--config FILE] {init|refresh|use|path|show|set|unset|keys} ...")
         print("")
         print("cache/namespace config sources (priority high -> low):")
         print("  --config > PIGEON_CONFIG > default config path > env PIGEON_* overrides")
@@ -264,9 +276,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("usage: pigeon [--config FILE] [--route ROUTE] [--wait-worker S] [-v] <cmd...>", file=sys.stderr)
             return 2
         cfg, created, changed = refresh_file_config(known.config)
+        active = set_active_config_path(cfg.path)
         print(f"path={cfg.path}")
         print(f"created={'yes' if created else 'no'}")
         print(f"refreshed={'yes' if changed else 'no'}")
+        print(f"active={active}")
         return 0
     return run_command(command=command, parsed_args=known)
 

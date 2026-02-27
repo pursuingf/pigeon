@@ -40,15 +40,21 @@ class CliParsingTests(unittest.TestCase):
     def test_main_config_only_refreshes_target_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "cfg.toml"
-            with mock.patch.dict(os.environ, {"USER": "cli-test-user"}, clear=True):
+            env = {"USER": "cli-test-user", "HOME": tmp}
+            with mock.patch.dict(os.environ, env, clear=True):
                 buf = StringIO()
                 with redirect_stdout(buf):
                     rc = main(["--config", str(cfg)])
+                path_buf = StringIO()
+                with redirect_stdout(path_buf):
+                    rc_path = main(["config", "path"])
             self.assertEqual(rc, 0)
+            self.assertEqual(rc_path, 0)
             self.assertTrue(cfg.exists())
             body = cfg.read_text(encoding="utf-8")
             self.assertIn('cache = "/tmp/pigeon-cache"', body)
             self.assertIn('namespace = "cli-test-user"', body)
+            self.assertEqual(path_buf.getvalue().strip(), str(cfg.resolve()))
 
 
 if __name__ == "__main__":
