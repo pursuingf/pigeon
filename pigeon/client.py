@@ -37,6 +37,7 @@ from .config import FileConfig, sync_env_to_file_config
 
 DEFAULT_WORKER_WAIT_SECONDS = 3.0
 DEFAULT_INTERACTIVE_COMMAND = "bash --noprofile --norc -i"
+DEFAULT_INTERACTIVE_PS1 = "[pigeon][\\u@\\h \\w]\\$ "
 FORBIDDEN_ARGV_OPERATOR_TOKENS = {"|", "||", ";", "&&", "&", ">", ">>", "<", "<<", "(", ")"}
 
 
@@ -94,13 +95,16 @@ def _build_request(
     session_id: str,
     file_config: FileConfig,
     route: Optional[str],
+    extra_env: Optional[Dict[str, str]] = None,
+    unset_env: Optional[Sequence[str]] = None,
 ) -> Dict[str, object]:
     # Do not forward caller(gpu_m) environment into remote execution.
     # Worker(cpu_m) process environment is the base, while config remote_env
     # explicitly overrides selected keys when needed.
-    env = dict(file_config.remote_env)
+    env = dict(extra_env or {})
+    env.update(file_config.remote_env)
     term_size = _read_terminal_size()
-    return {
+    request: Dict[str, object] = {
         "session_id": session_id,
         "command": list(command),
         "cwd": cwd,
@@ -118,6 +122,9 @@ def _build_request(
             "size": term_size,
         },
     }
+    if unset_env:
+        request["unset_env"] = [k for k in unset_env if isinstance(k, str) and k]
+    return request
 
 
 def _is_shell_c(command: Sequence[str]) -> bool:
@@ -236,6 +243,41 @@ def _build_interactive_exec_command(file_config: FileConfig) -> List[str]:
     return ["bash", "--noprofile", "--norc", "-c", f"{prelude}\nexec {quoted}"]
 
 
+def _interactive_extra_env() -> Dict[str, str]:
+    raw = os.environ.get("PIGEON_INTERACTIVE_PS1")
+    prompt = DEFAULT_INTERACTIVE_PS1 if raw is None else str(raw)
+    return {"PS1": prompt}
+
+
+def _terminal_env_patch() -> tuple[Dict[str, str], List[str]]:
+    copy_keys = (
+        "TERM",
+        "COLORTERM",
+        "TERM_PROGRAM",
+        "TERM_PROGRAM_VERSION",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "LS_COLORS",
+        "NO_COLOR",
+        "FORCE_COLOR",
+    )
+    out: Dict[str, str] = {}
+    unset: List[str] = []
+    for key in copy_keys:
+        val = os.environ.get(key)
+        if isinstance(val, str):
+            out[key] = val
+    # Keep color behavior aligned with the caller terminal: if the caller did
+    # not request NO_COLOR/FORCE_COLOR, explicitly clear inherited worker-side
+    # values from service launch context.
+    if "NO_COLOR" not in out:
+        unset.append("NO_COLOR")
+    if "FORCE_COLOR" not in out:
+        unset.append("FORCE_COLOR")
+    return out, unset
+
+
 def _shell_prelude(file_config: FileConfig) -> str:
     lines: List[str] = []
     if _source_bashrc_enabled(file_config):
@@ -247,7 +289,7 @@ def _shell_prelude(file_config: FileConfig) -> str:
         lines.extend(
             [
                 "shopt -s expand_aliases",
-                "alias ls='ls --color=auto'",
+                "alias ls='ls --color=always'",
                 "alias grep='grep --color=auto'",
                 "alias egrep='egrep --color=auto'",
                 "alias fgrep='fgrep --color=auto'",
@@ -549,12 +591,19 @@ def run_command(command: List[str], parsed_args: argparse.Namespace, command_mod
     sdir = session_dir(config, session_id)
     sdir.mkdir(parents=True, exist_ok=False)
 
+    terminal_env, terminal_unset = _terminal_env_patch()
+    extra_env = dict(terminal_env)
+    if command_mode == "interactive":
+        extra_env.update(_interactive_extra_env())
+
     request = _build_request(
         command=normalized_command,
         cwd=cwd,
         session_id=session_id,
         file_config=file_config,
         route=req_route,
+        extra_env=extra_env,
+        unset_env=terminal_unset,
     )
     atomic_write_json(request_path(config, session_id), request)
     atomic_write_json(

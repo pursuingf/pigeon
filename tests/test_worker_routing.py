@@ -3,6 +3,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from pigeon.common import (
     PigeonConfig,
@@ -13,6 +14,7 @@ from pigeon.common import (
 )
 from pigeon.config import FileConfig
 from pigeon.worker import (
+    _build_child_env,
     _downgrade_interactive_shell_flag,
     _normalize_route,
     _resolve_worker_debug,
@@ -23,6 +25,37 @@ from pigeon.worker import (
 
 
 class WorkerRoutingTests(unittest.TestCase):
+    def test_build_child_env_sanitizes_sandbox_vars(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {
+                "CODEX_SANDBOX_NETWORK_DISABLED": "1",
+                "TERM": "dumb",
+                "HTTPS_PROXY": "http://old-proxy:7890",
+            },
+            clear=True,
+        ):
+            env = _build_child_env(
+                {"TERM": "xterm-256color"},
+                [],
+            )
+        self.assertNotIn("CODEX_SANDBOX_NETWORK_DISABLED", env)
+        self.assertEqual(env.get("TERM"), "xterm-256color")
+        self.assertEqual(env.get("HTTPS_PROXY"), "http://old-proxy:7890")
+
+    def test_build_child_env_applies_unset_before_overrides(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {"NO_COLOR": "1", "FORCE_COLOR": "1"},
+            clear=True,
+        ):
+            env = _build_child_env(
+                {"FORCE_COLOR": "1"},
+                ["NO_COLOR", "FORCE_COLOR"],
+            )
+        self.assertNotIn("NO_COLOR", env)
+        self.assertEqual(env.get("FORCE_COLOR"), "1")
+
     def test_normalize_route(self) -> None:
         self.assertIsNone(_normalize_route(None))
         self.assertIsNone(_normalize_route(""))

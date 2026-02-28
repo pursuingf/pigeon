@@ -43,6 +43,7 @@ from .common import (
 from .config import FileConfig, config_target_path, load_file_config, sync_env_to_file_config
 
 WORKER_CONFIG_RELOAD_INTERVAL_SECONDS = 1.0
+_SANITIZED_ENV_PREFIXES = ("CODEX_SANDBOX_",)
 
 
 def _normalize_route(value: object) -> str | None:
@@ -164,6 +165,22 @@ def _shell_exit_code(returncode: int) -> int:
     return 128 + abs(returncode)
 
 
+def _build_child_env(env_in: object, unset_in: object) -> Dict[str, str]:
+    env: Dict[str, str] = dict(os.environ)
+    for key in list(env.keys()):
+        if any(key.startswith(prefix) for prefix in _SANITIZED_ENV_PREFIXES):
+            env.pop(key, None)
+    if isinstance(unset_in, list):
+        for item in unset_in:
+            if isinstance(item, str) and item:
+                env.pop(item, None)
+    if isinstance(env_in, dict):
+        for k, v in env_in.items():
+            if isinstance(k, str) and isinstance(v, str):
+                env[k] = v
+    return env
+
+
 def _set_winsize(fd: int, rows: int, cols: int) -> None:
     import struct
     import termios
@@ -242,12 +259,17 @@ def _run_session_once(config: PigeonConfig, session_id: str, debug: bool = False
     if not isinstance(size, dict):
         size = None
 
-    env_in = req.get("env")
-    env: Dict[str, str] = dict(os.environ)
-    if isinstance(env_in, dict):
-        for k, v in env_in.items():
-            if isinstance(k, str) and isinstance(v, str):
-                env[k] = v
+    env = _build_child_env(req.get("env"), req.get("unset_env"))
+    _debug_log(
+        debug,
+        (
+            f"session={session_id} env TERM={env.get('TERM', '-') or '-'} "
+            f"NO_COLOR={'set' if 'NO_COLOR' in env else 'unset'} "
+            f"proxy={'set' if ('HTTPS_PROXY' in env or 'https_proxy' in env) else 'unset'} "
+            f"sandbox={'present' if any(k.startswith('CODEX_SANDBOX_') for k in env) else 'cleared'}"
+        ),
+        kind="transport",
+    )
 
     _update_status(
         config,

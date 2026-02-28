@@ -14,4 +14,3 @@ route = "cpu-pool-a"
 
 [remote_env]
 # Example:
-HTTPS_PROXY="http://proxy.example:8080"

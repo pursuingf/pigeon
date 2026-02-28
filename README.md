@@ -167,6 +167,14 @@ pigeon
 - 生效配置（`interactive.*`、`worker.*`、`remote_env`）
 - 当前匹配到的活跃 worker 明细（`worker_id/host/pid/route/heartbeat`）
 
+interactive shell 默认 prompt 为：
+
+```bash
+[pigeon][\u@\h \w]\$
+```
+
+其中包含 `pigeon` 标记、当前 user、当前目录。可用 `PIGEON_INTERACTIVE_PS1` 覆盖。
+
 在 interactive shell 里执行 `codex`：
 
 ```bash
@@ -342,6 +350,12 @@ pigeon config unset remote_env.HTTPS_PROXY
 
 ```bash
 pigeon worker --debug
+```
+
+检查远端关键环境（颜色/代理/Codex）：
+
+```bash
+pigeon -c 'env | sort | rg -n "^(TERM|NO_COLOR|FORCE_COLOR|HTTPS?_PROXY|https?_proxy|CODEX_SANDBOX_)="'
 ```
 
 只检查是否有可用 worker（不执行命令）：

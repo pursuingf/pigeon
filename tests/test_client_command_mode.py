@@ -19,7 +19,7 @@ from pigeon.client import (
     _wait_for_worker,
     run_command,
 )
-from pigeon.common import PigeonConfig, now_ts, write_worker_heartbeat
+from pigeon.common import PigeonConfig, now_ts, read_json, request_path, write_worker_heartbeat
 from pigeon.config import FileConfig
 
 
@@ -79,7 +79,7 @@ class ClientCommandModeTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             with mock.patch("pigeon.client.sys.stdout.isatty", return_value=True):
                 prelude = _shell_prelude(self._cfg())
-        self.assertIn("alias ls='ls --color=auto'\n", prelude)
+        self.assertIn("alias ls='ls --color=always'\n", prelude)
         self.assertTrue(prelude.endswith("\n"))
 
     def test_shell_prelude_can_silently_source_bashrc(self) -> None:
@@ -99,11 +99,13 @@ class ClientCommandModeTests(unittest.TestCase):
                 session_id="sid",
                 file_config=file_cfg,
                 route=None,
+                extra_env={"FOO": "from_extra", "BAZ": "baz_extra"},
             )
         env = req["env"]
         self.assertIsInstance(env, dict)
         self.assertEqual(env["FOO"], "from_config")
         self.assertEqual(env["BAR"], "bar_cfg")
+        self.assertEqual(env["BAZ"], "baz_extra")
         self.assertNotIn("USER", env)
         requester = req["requester"]
         self.assertIsInstance(requester, dict)
@@ -122,6 +124,43 @@ class ClientCommandModeTests(unittest.TestCase):
         env = req["env"]
         self.assertIsInstance(env, dict)
         self.assertEqual(env, {})
+
+    def test_build_request_carries_unset_env(self) -> None:
+        req = _build_request(
+            command=["bash", "-lc", "echo x"],
+            cwd="/tmp",
+            session_id="sid",
+            file_config=self._cfg(),
+            route=None,
+            unset_env=["NO_COLOR", "FORCE_COLOR"],
+        )
+        raw = req.get("unset_env")
+        self.assertIsInstance(raw, list)
+        self.assertEqual(raw, ["NO_COLOR", "FORCE_COLOR"])
+
+    def test_run_command_interactive_sets_default_ps1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_path = Path(tmp) / "cfg.toml"
+            cache_root = Path(tmp) / "cache"
+            session_id = "sid-test"
+            env = {
+                "PIGEON_CONFIG": str(cfg_path),
+                "PIGEON_CACHE": str(cache_root),
+                "PIGEON_NAMESPACE": "ns-test",
+            }
+            args = argparse.Namespace(verbose=False, route=None, wait_worker=0.0)
+            with mock.patch.dict(os.environ, env, clear=True):
+                with mock.patch("pigeon.client._wait_for_worker", return_value=[{"worker_id": "w1"}]):
+                    with mock.patch("pigeon.client.discover_active_workers", return_value=[]):
+                        with mock.patch("pigeon.client.new_session_id", return_value=session_id):
+                            with mock.patch("pigeon.client._print_interactive_panel"):
+                                rc = run_command([], args, command_mode="interactive")
+            cfg = PigeonConfig(cache_root=cache_root.resolve(), namespace="ns-test")
+            req = read_json(request_path(cfg, session_id))
+        self.assertEqual(rc, 4)
+        env_map = req["env"]
+        self.assertIsInstance(env_map, dict)
+        self.assertEqual(env_map.get("PS1"), "[pigeon][\\u@\\h \\w]\\$ ")
 
     def test_ambiguous_operator_token_detection(self) -> None:
         self.assertEqual(_find_ambiguous_operator_token(["echo", "|", "wc"]), "|")

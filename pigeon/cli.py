@@ -271,6 +271,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("  PIGEON_WORKER_ROUTE=<worker consume route>")
         print("  PIGEON_INTERACTIVE_COMMAND=<interactive shell command>")
         print("  PIGEON_INTERACTIVE_SOURCE_BASHRC=<bool>")
+        print("  PIGEON_INTERACTIVE_PS1=<interactive prompt string>")
         print("  PIGEON_WAIT_WORKER=<seconds> (default: 3.0)")
         return 0
 
